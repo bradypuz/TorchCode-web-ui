@@ -10,6 +10,7 @@ import 'katex/dist/katex.min.css';
 import { ArrowRight, BookOpen, Check, Code2, Copy, Maximize2, Minimize2, RefreshCw, Sparkles, X } from 'lucide-react';
 import s from './solution.module.css';
 import ExplanationVisual, { VISUAL_KINDS } from './ExplanationVisual';
+import MermaidDiagram, { MermaidVisibilityContext } from './MermaidDiagram';
 
 type Solution = {
   id: string;
@@ -40,6 +41,9 @@ export default function SolutionDialog({ taskId, user, onClose }: Props) {
       if (isValidElement<{ className?: string; children?: React.ReactNode }>(child) && child.props.className === 'language-torchcode-visual') {
         const kind = String(child.props.children).trim();
         if ((VISUAL_KINDS as readonly string[]).includes(kind)) return <ExplanationVisual kind={kind} taskId={taskId} />;
+      }
+      if (isValidElement<{ className?: string; children?: React.ReactNode }>(child) && child.props.className === 'language-mermaid') {
+        return <MermaidDiagram source={String(child.props.children).replace(/\n$/, '')} />;
       }
       return <pre>{children}</pre>;
     },
@@ -118,11 +122,11 @@ export default function SolutionDialog({ taskId, user, onClose }: Props) {
         <div className={s.editor}><Editor language="python" theme="vs-dark" value={solution.code} loading={<span className={s.editorLoading}>Loading code…</span>} options={{ readOnly: true, domReadOnly: true, minimap: { enabled: false }, automaticLayout: true, fontSize: 13, lineHeight: 23, scrollBeyondLastLine: false, padding: { top: 17, bottom: 17 }, renderLineHighlight: 'none', contextmenu: false, wordWrap: 'on', scrollbar: { verticalScrollbarSize: 7, horizontalScrollbarSize: 7 } }} /></div>
       </section>
       <section id="solution-explanation-panel" role="tabpanel" aria-labelledby="solution-explanation-tab" hidden={tab !== 'explanation'} className={s.explanationPanel} tabIndex={0}>
-        <div className={s.explanation}><ReactMarkdown
+        <MermaidVisibilityContext.Provider value={tab === 'explanation'}><div className={s.explanation}><ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[rehypeKatex]}
           components={markdownComponents}
-        >{solution.explanation}</ReactMarkdown></div>
+        >{solution.explanation}</ReactMarkdown></div></MermaidVisibilityContext.Provider>
       </section>
     </>}
 

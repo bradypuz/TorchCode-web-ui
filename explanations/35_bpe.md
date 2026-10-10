@@ -1,97 +1,128 @@
 # Byte-Pair Encoding
 
-This tokenizer learns reusable word pieces by repeatedly merging the most frequent neighboring symbols. It starts with characters and an end-of-word marker, so a word can still be represented even when the complete word was absent from training.
+This is a simple **Byte Pair Encoding (BPE) tokenizer**. It starts with individual characters and learns which neighboring tokens frequently occur together, then combines them into larger tokens.
 
-## Inputs and output
+For example:
 
-`SimpleBPE.train(corpus, num_merges)` takes a list of word strings and stores ordered pair rules in `self.merges`; it returns nothing. `encode(text)` splits a string on whitespace and returns a flat list of string tokens. There are no tensors or integer token IDs. A token can contain the literal `</w>` marker.
+```text
+l o w </w>
+→ lo w </w>
+→ low </w>
+→ low</w>
+```
 
-## Reading the actual code
+`</w>` marks the end of a word.
+
+## `__init__`: store the learned merges
 
 ```python
-vocab = {}
-for word in corpus:
-    symbols = tuple(word) + ('</w>',)
-    vocab[symbols] = vocab.get(symbols, 0) + 1
 self.merges = []
 ```
 
-A word such as `ab` becomes `('a', 'b', '</w>')`. Tuples can be dictionary keys. Repeated words increment their frequency instead of creating separate entries. The end marker identifies word endings and can itself be merged into a token. Resetting `self.merges` makes each training call start a new tokenizer.
+This list records pairs in the order they were learned:
 
 ```python
-pairs = {}
-for word, freq in vocab.items():
-    for i in range(len(word) - 1):
-        pair = (word[i], word[i + 1])
-        pairs[pair] = pairs.get(pair, 0) + freq
+[('l', 'o'), ('lo', 'w'), ('low', '</w>')]
 ```
 
-Every adjacent position contributes its word frequency. With corpus `['ab', 'ab', 'ac']`, the vocabulary has frequency two for `ab` and one for `ac`. Pair counts are:
+The order matters because later merges can depend on earlier ones.
 
-| Adjacent pair | Count from `ab` | Count from `ac` | Total |
-| --- | ---: | ---: | ---: |
-| `('a','b')` | 2 | 0 | 2 |
-| `('b','</w>')` | 2 | 0 | 2 |
-| `('a','c')` | 0 | 1 | 1 |
-| `('c','</w>')` | 0 | 1 | 1 |
+## `train`: learn frequent pairs
 
-Repeated occurrences within one word count separately too: `aaaa` contains three adjacent `('a','a')` occurrences before any merge. Pair counting considers overlapping positions; performing a merge uses nonoverlapping replacements.
+**1. Build a vocabulary of words and their frequencies.**
 
 ```python
-if not pairs:
-    break
+symbols = tuple(word) + ('</w>',)
+vocab[symbols] = vocab.get(symbols, 0) + 1
+```
+
+For this corpus:
+
+```python
+["low", "low", "lower"]
+```
+
+the initial vocabulary is:
+
+```python
+{
+    ('l', 'o', 'w', '</w>'): 2,
+    ('l', 'o', 'w', 'e', 'r', '</w>'): 1
+}
+```
+
+Repeated words count more heavily during training.
+
+**2. Count every adjacent pair.**
+
+```python
+pairs[pair] = pairs.get(pair, 0) + freq
+```
+
+Here, `('l', 'o')` appears three times overall: twice in `"low"` and once in `"lower"`.
+
+**3. Choose the most frequent pair.**
+
+```python
 best = max(pairs, key=pairs.get)
 self.merges.append(best)
 ```
 
-`max` chooses the greatest count. Equal counts keep the first encountered dictionary key, so `('a','b')` wins our first tie. Recording rules in order matters because a later rule can use a symbol created by an earlier one. With no adjacent pairs left, training stops early.
+If pairs tie, Python chooses the first one encountered.
+
+**4. Replace that pair everywhere in the vocabulary.**
 
 ```python
-while i < len(word):
-    if i < len(word) - 1 and (word[i], word[i + 1]) == best:
-        new_word.append(word[i] + word[i + 1])
-        i += 2
-    else:
-        new_word.append(word[i])
-        i += 1
-new_vocab[tuple(new_word)] = freq
+new_word.append(word[i] + word[i + 1])
+i += 2
 ```
 
-The scan builds a replacement word left to right. Concatenating two symbols creates one new symbol, and advancing by two prevents reusing the second symbol in an overlapping merge. Unmatched symbols are copied. The outer loop repeats pair counting on this rebuilt vocabulary.
+For example, merging `('l', 'o')` changes:
 
 ```text
-ab, frequency 2:  [a, b, </w>] -> [ab, </w>] -> [ab</w>]
-ac, frequency 1:  [a, c, </w>] -> [a, c, </w>] -> [a, c, </w>]
-merge rules:      ('a','b')       ('ab','</w>')
+('l', 'o', 'w', '</w>')
+→ ('lo', 'w', '</w>')
 ```
 
-After the first merge, `('ab','</w>')` has count two and wins the second round.
+`i += 2` skips both consumed symbols. Otherwise, the code copies one symbol and advances by one.
+
+This process repeats up to `num_merges` times, stopping early if no adjacent pairs remain.
+
+## `encode`: apply the learned merges
+
+Encoding begins by splitting the text into words, then splitting each word into characters:
 
 ```python
-for word in text.split():
-    symbols = list(word) + ['</w>']
-    for a, b in self.merges:
+symbols = list(word) + ['</w>']
 ```
 
-Encoding restarts at characters for each whitespace-separated word, then replays every learned pair in order. Its scan replaces a match with `symbols[:i] + [a+b] + symbols[i+2:]`; unmatched positions advance `i`. Finally, `all_tokens.extend(symbols)` joins the words' token lists. Applying rules simultaneously would miss later rules involving `ab`.
-
-## Run two merges
-
-Load the reference solution first, then run:
+It applies every learned merge **in training order**:
 
 ```python
-# Example: Count repeated words and replay learned merges in order
+for a, b in self.merges:
+```
+
+Whenever neighboring symbols match a learned pair, it replaces them with their concatenation:
+
+```python
+symbols = symbols[:i] + [a + b] + symbols[i + 2:]
+```
+
+Finally, it puts all words’ tokens into one flat list.
+
+## Complete example
+
+```python
 bpe = SimpleBPE()
-bpe.train(['ab', 'ab', 'ac'], num_merges=2)
-assert bpe.merges == [('a', 'b'), ('ab', '</w>')]
-assert bpe.encode('ab ac') == ['ab</w>', 'a', 'c', '</w>']
-assert bpe.encode('ad') == ['a', 'd', '</w>']
-overlap = SimpleBPE()
-overlap.train(['aaaa'], num_merges=1)
-assert overlap.merges == [('a', 'a')]
-assert overlap.encode('aaaa') == ['aa', 'aa', '</w>']
+bpe.train(["low", "low", "lower"], num_merges=3)
+
+print(bpe.merges)
+# [('l', 'o'), ('lo', 'w'), ('low', '</w>')]
+
+print(bpe.encode("low lower"))
+# ['low</w>', 'low', 'e', 'r', '</w>']
 ```
 
-## Common mistakes and reference limits
+The frequent word `"low"` becomes a single token. `"lower"` shares the learned `"low"` token, but its remaining characters stay separate.
 
-Count corpus frequency, preserve merge order, and avoid overlapping replacements. Corpus order influences ties. Despite the name, this reference starts from Unicode characters rather than bytes. It does not preserve whitespace, implement decoding, assign vocabulary IDs, or add special-token handling. The marker may stay separate or become part of a larger token.
+A few details: `train()` expects an iterable of **words**, encoding discards original whitespace through `split()`, and this implementation operates on **characters**, despite the “Byte Pair Encoding” name.

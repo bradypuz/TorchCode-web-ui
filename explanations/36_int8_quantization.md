@@ -1,79 +1,74 @@
 # INT8 Quantized Linear Layer
 
-`Int8Linear` stores approximate weights as small signed integers. A scale for each output row turns those integers back into floating-point weights during forward. This reduces weight storage while keeping the familiar linear operation `x @ weight.T + bias`.
-
-## Inputs and stored shapes
-
-The constructor takes `weight` of shape `(O, I)` and optional `bias` of shape `(O,)`. Integer weights keep shape `(O, I)`, and scales have shape `(O, 1)`. Input `x` can have shape `(..., I)`; the output has shape `(..., O)`. The weights are quantized once when the layer is constructed.
-
-## Reading the actual code
+`Int8Linear` is a linear layer that **stores its weights as 8-bit integers**, then converts them back to floating point to compute:
 
 ```python
-super().__init__()
+output = x @ weight.T + bias
+```
+
+This is the same operation as [`nn.Linear`](https://docs.pytorch.org/docs/2.14/generated/torch.nn.Linear.html), using an approximation of the original weights.
+
+Assume `weight` has shape `[out_features, in_features]`: each row contains the weights for one output feature.
+
+**1. Calculate one scale per row**
+
+```python
 scale = weight.abs().amax(dim=1, keepdim=True) / 127.0
 ```
 
-Calling the parent initializer enables normal module behavior such as buffer registration. `abs()` measures magnitude, and `amax(dim=1)` finds the largest magnitude within each output row. Dividing by `127` maps that largest weight near the largest positive signed INT8 value. `keepdim=True` is essential: a scale shaped `(O, 1)` broadcasts across the input columns in its own row.
+- `abs()` takes the magnitude of each weight.
+- `amax(dim=1)` finds the largest magnitude in each row.
+- Dividing by `127` makes that largest magnitude correspond to roughly `127` or `-127` when quantized.
+- `keepdim=True` gives `scale` shape `[out_features, 1]`, so it broadcasts across each row.
 
-For rows `[1, 0.4, -0.2]` and `[10, 4, -2]`, scales are `1/127` and `10/127`. The second row has a ten-times-larger quantization step, but the same relative integer representation.
+Using a separate scale for each output feature is called **per-channel quantization**.
+
+**2. Convert the weights to integers**
 
 ```python
-self.register_buffer('weight_int8',
-    torch.round(weight / (scale + 1e-10)).clamp(-128, 127).to(torch.int8))
+torch.round(weight / (scale + 1e-10)).clamp(-128, 127).to(torch.int8)
+```
+
+This divides each row by its scale, rounds to integers, restricts values to the int8 range, and stores them as `torch.int8`. The small `1e-10` protects against division by zero for all-zero rows in typical float32 use.
+
+For example:
+
+```text
+Original row:     [0.2, -0.5, 1.0]
+Scale:           1.0 / 127 ≈ 0.007874
+Integer weights: [25, -64, 127]
+Reconstructed:   [0.19685, -0.50394, 1.0]
+```
+
+The reconstruction is close, but rounding loses some precision.
+
+**3. Store weights, scales, and bias**
+
+```python
+self.register_buffer('weight_int8', ...)
 self.register_buffer('scale', scale)
 ```
 
-Dividing each row by its scale expresses weights in integer-sized units. Rounding picks the nearest integer; clamping enforces the legal signed INT8 range; `.to(torch.int8)` changes storage dtype. PyTorch's `round` uses nearest-even behavior for exact half-integer ties. The tiny denominator addition prevents division by zero for a zero row.
-
-| Row | Scale | Values before rounding, approximately | Stored integers | Reconstructed weights, approximately |
-| --- | --- | --- | --- | --- |
-| `[1, 0.4, -0.2]` | `1/127` | `[127, 50.8, -25.4]` | `[127, 51, -25]` | `[1, 0.401575, -0.196850]` |
-| `[10, 4, -2]` | `10/127` | `[127, 50.8, -25.4]` | `[127, 51, -25]` | `[10, 4.015748, -1.968504]` |
-| `[0, 0, 0]` | 0 | `[0, 0, 0]` | `[0, 0, 0]` | `[0, 0, 0]` |
-
-Buffers are saved in `state_dict()` and follow module device moves, but optimizers do not discover them as trainable parameters.
+Buffers belong to the module, are included in its `state_dict`, and move with it when calling `.to(device)`. They are excluded from `model.parameters()`, so a normal optimizer does not update them. [PyTorch buffer documentation](https://docs.pytorch.org/docs/2.14/generated/torch.nn.Module.html#torch.nn.Module.register_buffer)
 
 ```python
 self.bias = nn.Parameter(bias.clone()) if bias is not None else None
 ```
 
-An optional bias is cloned so its storage is separate from the supplied bias. Unlike quantized weight buffers, this bias is a trainable parameter.
+The bias is copied and registered as a **trainable parameter**, if provided.
+
+**4. Run the forward pass**
 
 ```python
 w = self.weight_int8.float() * self.scale
-out = x @ w.T
-if self.bias is not None:
-    out = out + self.bias
-return out
 ```
 
-The integer tensor is converted back to float and multiplied by the per-row scales. `w.T` has shape `(I, O)`, so an input `(B, I)` produces `(B, O)`. A bias `(O,)` broadcasts across all leading input dimensions. This is a **floating-point** matrix multiply using reconstructed weights, not an integer-only computation.
-
-For input `[1,1,1]`, the first output before bias is `1+51/127-25/127 = 153/127`, approximately `1.204724`. The original row would produce `1.2`; that small difference is quantization error.
-
-## Run the row-scale example
-
-Load the reference solution first, then run:
+This *dequantizes* the weights: integer values are multiplied by their row scales to recover approximate floating-point weights.
 
 ```python
-# Example: Inspect row-wise integer weights and reconstructed outputs
-weight = torch.tensor([[1.0, 0.4, -0.2],
-                       [10.0, 4.0, -2.0],
-                       [0.0, 0.0, 0.0]])
-bias = torch.tensor([0.1, -0.2, 0.0])
-layer = Int8Linear(weight, bias)
-expected_ints = torch.tensor([[127, 51, -25], [127, 51, -25], [0, 0, 0]],
-                             dtype=torch.int8)
-assert torch.equal(layer.weight_int8, expected_ints)
-torch.testing.assert_close(layer.scale, torch.tensor([[1/127], [10/127], [0.0]]))
-x = torch.ones(1, 3)
-expected = torch.tensor([[153/127 + 0.1, 1530/127 - 0.2, 0.0]])
-torch.testing.assert_close(layer(x), expected)
-assert layer(x).shape == (1, 3)
-assert set(dict(layer.named_buffers())) == {'weight_int8', 'scale'}
-assert set(dict(layer.named_parameters())) == {'bias'}
+out = x @ w.T
 ```
 
-## Common mistakes and reference limits
+For input shape `[batch_size, in_features]`, the output has shape `[batch_size, out_features]`. The optional bias is then added across the batch.
 
-A scale shaped `(O,)` broadcasts incorrectly across weight columns. Removing rounding truncates values instead of choosing nearest integers. The reference does not quantize activations or provide an INT8 kernel. Bias stays trainable. Construction does not explicitly detach the source weight, so its scale can retain an autograd link when the source requires gradients. Forward assumes compatible dtype and device.
+**The main tradeoff:** int8 weight storage uses about one-quarter the space of float32 weights, plus the scales. However, this implementation recreates floating-point weights on every forward pass and performs floating-point matrix multiplication. It therefore **does not provide an int8 computation speedup automatically**, and peak runtime memory savings may be limited.

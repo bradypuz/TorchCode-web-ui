@@ -1,123 +1,156 @@
 # GPT-2 Transformer Block
 
-This class combines two transformations. Causal attention lets a token read earlier tokens. An MLP transforms that token's features. Each transformation sits on a normalized branch whose output is added to the current representation. Reading those additions in order explains what “pre-norm residual block” means in the actual code.
+This implements **one GPT-2-style Transformer block**. It updates each token’s representation in two stages:
 
-## Keep track of the dimensions
+1. **Causal self-attention:** gather information from the current token and earlier tokens.
+2. **An MLP:** transform the resulting features for each token independently.
 
-`B` is batch size, `S` sequence length, `D = d_model` model width, and `H = num_heads` attention heads. Per-head width is `d_k = D // H`, requiring divisible dimensions. Input and output are `(B,S,D)`.
+The input and output have the same shape:
 
-| Stage | Shape |
-|---|---|
-| Input and LayerNorm outputs | `(B,S,D)` |
-| Q/K/V split into heads | `(B,H,S,d_k)` |
-| Attention scores | `(B,H,S,S)` |
-| Concatenated attention result | `(B,S,D)` |
-| Expanded MLP hidden features | `(B,S,4D)` |
-| MLP result and every residual sum | `(B,S,D)` |
+```text
+[B, S, d_model]
 
-Neither residual addition can work if its branch returns a different feature width.
+B       = batch size
+S       = number of tokens per sequence
+d_model = number of features representing each token
+```
 
-## 1. Register the components
+**The constructor creates the learned layers.**
 
 ```python
-super().__init__()
 self.num_heads = num_heads
 self.d_k = d_model // num_heads
-self.ln1 = nn.LayerNorm(d_model)
-self.ln2 = nn.LayerNorm(d_model)
 ```
 
-The class inherits from `nn.Module`. Calling `super().__init__()` enables registration of its child layers and parameters, so `.parameters()`, device transfers, and saved state include them. `ln1` and `ln2` are distinct LayerNorms, each normalizing features within one token. Their learned scales and shifts can differ.
+Attention uses several heads, each with `d_k` features. For example, `d_model=768` and `num_heads=12` gives 64 features per head. **`d_model` must be divisible by `num_heads`.**
+
+`ln1` and `ln2` normalize each token across its feature dimension, helping stabilize training. The four linear layers produce queries, keys, values, and the final attention output. Inheriting from `nn.Module` registers these layers so PyTorch can train their parameters.
+
+**`_attn` first constructs queries, keys, and values.**
 
 ```python
-self.W_q = nn.Linear(d_model, d_model)
-self.W_k = nn.Linear(d_model, d_model)
-self.W_v = nn.Linear(d_model, d_model)
-self.W_o = nn.Linear(d_model, d_model)
-self.mlp = nn.Sequential(
-    nn.Linear(d_model, 4 * d_model),
-    nn.GELU(),
-    nn.Linear(4 * d_model, d_model),
-)
-```
-
-The four attention projections preserve width. The MLP first expands width to `4D`, applies a smooth elementwise GELU nonlinearity, then returns to `D`. `nn.Sequential` applies those steps in their listed order. The MLP acts independently at each token; it does not mix sequence positions.
-
-## 2. Compute attention on a supplied normalized tensor
-
-Inside `_attn`, the projections are split into heads:
-
-```python
-B, S, _ = x.shape
 q = self.W_q(x).view(B, S, self.num_heads, self.d_k).transpose(1, 2)
-k = self.W_k(x).view(B, S, self.num_heads, self.d_k).transpose(1, 2)
-v = self.W_v(x).view(B, S, self.num_heads, self.d_k).transpose(1, 2)
 ```
 
-`view` groups adjacent projected features into heads. The transpose changes `(B,S,H,d_k)` into `(B,H,S,d_k)`, allowing one matrix product per batch/head.
+The same operations create `k` and `v`. Intuitively:
+
+- **Query:** what information this token is looking for.
+- **Key:** what information another token can match against.
+- **Value:** the information that token contributes if attended to.
+
+Each projection starts with shape `[B, S, d_model]`. Reshaping and transposing separate the heads:
+
+```text
+[B, S, d_model]
+       ↓ view
+[B, S, num_heads, d_k]
+       ↓ transpose
+[B, num_heads, S, d_k]
+```
+
+Each head can learn different patterns of relationships between tokens.
+
+**Attention scores measure how strongly tokens match.**
 
 ```python
 scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
-mask = torch.triu(torch.ones(S, S, device=x.device, dtype=torch.bool), diagonal=1)
-scores = scores.masked_fill(mask, float('-inf'))
-weights = torch.softmax(scores, dim=-1)
-attn = torch.matmul(weights, v)
-return self.W_o(attn.transpose(1, 2).contiguous().view(B, S, -1))
 ```
 
-Rows are queries and columns are keys. The strict upper triangle marks future keys. Its `(S,S)` mask broadcasts across both batch and head axes. Negative infinity makes forbidden softmax weights zero; the last-axis softmax normalizes across allowed keys. The value product returns `(B,H,S,d_k)`. Transposing back, making storage contiguous, and joining head features restores `(B,S,D)` before `W_o` mixes them.
+For each head, this calculates every query’s dot product with every key:
 
-## 3. Read the two residual updates in order
+
+
+$$
+
+\text{score}_{i,j}=\frac{q_i\cdot k_j}{\sqrt{d_k}}
+
+$$
+
+
+
+The result has shape `[B, num_heads, S, S]`. Entry `(i, j)` measures how strongly token `i` attends to token `j`. Dividing by `sqrt(d_k)` controls the scale of the scores, helping prevent softmax from becoming overly concentrated.
+
+**The mask blocks access to future tokens.**
+
+```python
+mask = torch.triu(torch.ones(S, S, ...), diagonal=1)
+scores = scores.masked_fill(mask, float('-inf'))
+```
+
+For four tokens, the mask is:
+
+```text
+        key position
+          0  1  2  3
+query 0   F  T  T  T
+      1   F  F  T  T
+      2   F  F  F  T
+      3   F  F  F  F
+```
+
+`T` means “blocked.” Thus, token 1 can attend to tokens 0 and 1, but cannot see tokens 2 or 3. The same mask broadcasts across all batches and heads.
+
+```python
+weights = torch.softmax(scores, dim=-1)
+attn = torch.matmul(weights, v)
+```
+
+Softmax converts each row into attention weights that sum to 1. Masked positions receive weight zero. Multiplying by `v` gives each token a **weighted sum of the allowed value vectors**.
+
+**The heads are concatenated and mixed.**
+
+```python
+return self.W_o(
+    attn.transpose(1, 2).contiguous().view(B, S, -1)
+)
+```
+
+The shape changes back:
+
+```text
+[B, num_heads, S, d_k]
+       ↓ transpose and reshape
+[B, S, d_model]
+```
+
+`.contiguous()` ensures the memory layout supports `.view()`. `W_o` then learns how to combine information from the different heads.
+
+**The MLP transforms each token’s features.**
+
+```text
+d_model → 4 × d_model → GELU → d_model
+```
+
+The first linear layer expands the feature space, GELU adds nonlinearity, and the second layer reduces it back. The same MLP is applied independently at every token position.
+
+**`forward` connects everything with residual additions.**
 
 ```python
 x = x + self._attn(self.ln1(x))
 x = x + self.mlp(self.ln2(x))
-return x
 ```
 
-In the first statement, only the attention branch receives `ln1(x)`. The residual path still carries the original `x`. After that addition, the variable `x` has changed. Both the second residual path and `ln2` now use this **attention-updated** tensor, not the original input.
+Equivalently:
 
-```text
-original x ───────────────────┐
-    └→ ln1 → causal attention ├→ add → updated x ───────────┐
-                              ┘       └→ ln2 → MLP ────────├→ add → output
-                                                          ┘
-```
 
-“Pre-norm” describes this placement of LayerNorm before each branch. Residual paths provide direct routes for information and gradients around the transformations.
 
-## Run an addition you can inspect numerically
+$$
 
-For easy arithmetic, set Q/K to zero, V/output to identity, and make the MLP return a fixed output bias. Input tokens `[1,3,1,3]` and `[2,6,2,6]` both normalize approximately to `[-1,1,-1,1]`. Causal uniform attention gives the first token its own normalized value and the second the average of both. Attention residuals are approximately `[0,4,0,4]` and `[1,7,1,7]`. Adding the MLP bias then gives the assertions below. LayerNorm epsilon accounts for tiny deviations from these rounded numbers.
+h=x+\operatorname{Attention}(\operatorname{LN}_1(x))
 
-```python
-# Example: See both residual additions in one small block
-block = GPT2Block(d_model=4, num_heads=2)
-with torch.no_grad():
-    for parameter in block.parameters():
-        parameter.zero_()
-    block.ln1.weight.fill_(1.)
-    block.ln2.weight.fill_(1.)
-    block.W_v.weight.copy_(torch.eye(4))
-    block.W_o.weight.copy_(torch.eye(4))
-    block.mlp[-1].bias.copy_(torch.tensor([0.1, 0.2, 0.3, 0.4]))
-x = torch.tensor([[[1., 3., 1., 3.], [2., 6., 2., 6.]]], requires_grad=True)
-normalized = block.ln1(x)
-assert torch.allclose(normalized, torch.tensor([[[-1., 1., -1., 1.], [-1., 1., -1., 1.]]]), atol=1e-4)
-out = block(x)
-expected = torch.tensor([[[0.1, 4.2, 0.3, 4.4], [1.1, 7.2, 1.3, 7.4]]])
-assert out.shape == (1, 2, 4)
-assert torch.allclose(out, expected, atol=1e-4)
-changed = x.detach().clone()
-changed[:, 1] = torch.tensor([100., -100., 20., -20.])
-assert torch.allclose(block(changed)[:, 0], out[:, 0])
-out.sum().backward()
-assert x.grad is not None
-assert all(parameter.grad is not None for parameter in block.parameters())
-```
+$$
 
-Changing the future token leaves the first result unchanged because LayerNorm/MLP are tokenwise and the attention mask blocks future access.
 
-## Reference scope
 
-This is one simplified decoder block, not a complete language model. It has no embeddings, vocabulary head, dropout, positional encoding, or KV cache. Attention remains dense, and head divisibility is assumed rather than validated.
+
+$$
+
+y=h+\operatorname{MLP}(\operatorname{LN}_2(h))
+
+$$
+
+
+
+Each sublayer learns an update that is added to the existing representation. These **residual connections** preserve information and help gradients flow during training. Because normalization happens before each sublayer, this is called a **pre-LayerNorm block**.
+
+A complete language model would also need token and position embeddings, multiple blocks, and an output layer that produces vocabulary scores.

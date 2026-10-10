@@ -1,83 +1,115 @@
 # Speculative Decoding Acceptance and Rejection
 
-A draft model proposes a short block of tokens. This function checks those proposals against target-model probabilities, keeps an accepted prefix, and replaces the first rejected token. It then stops because later probability rows belong to the original proposed prefix.
+This implements the **accept/reject part of speculative decoding**: a fast draft model proposes tokens, and a target model checks them. The function keeps accepted tokens until the first rejection, replaces that token, and stops.
 
-## Inputs and output
+The inputs are expected to be:
 
-`target_probs` and `draft_probs` have shape `(K, V)`, with a normalized vocabulary distribution at each draft position. `draft_tokens` is an integer tensor of shape `(K,)`. The output is a Python list. If all proposals pass it contains `K` tokens; otherwise it contains accepted earlier tokens followed by one correction token.
+- `target_probs`: shape `[K, V]`, containing the target model’s token probabilities.
+- `draft_probs`: shape `[K, V]`, containing the draft model’s token probabilities.
+- `draft_tokens`: shape `[K]`, containing token IDs sampled from the draft model.
 
-## Reading the actual code
+Here, `K` is the number of proposed tokens and `V` is the vocabulary size.
+
+**1. Check each proposed token**
 
 ```python
-K = len(draft_tokens)
-accepted = []
-for i in range(K):
-    t = draft_tokens[i].item()
-    ratio = target_probs[i, t] / max(draft_probs[i, t].item(), 1e-10)
+t = draft_tokens[i].item()
+ratio = target_probs[i, t] / max(draft_probs[i, t].item(), 1e-10)
 ```
 
-Positions are processed in order. `.item()` turns the proposed ID into a Python integer so it can index the row. The ratio compares target probability `p(t)` to draft probability `q(t)`. If the target likes the proposal at least as much as the draft does, its ordinary acceptance probability is one. If `p(t)=0.2` and `q(t)=0.5`, the ratio is `0.4`.
+`.item()` converts a single-element tensor into a Python number. The ratio compares how likely the proposed token is under the two models:
+
+
+
+$$
+
+\text{ratio} = \frac{p_{\text{target}}(t)}{p_{\text{draft}}(t)}
+
+$$
+
+
+
+The `1e-10` floor protects against division by zero.
 
 ```python
 if torch.rand(1).item() < min(1.0, ratio.item()):
     accepted.append(t)
 ```
 
-The random draw is uniform between zero and one. Capping the ratio at one makes it a probability. A draw of `0.3` accepts the `0.4` example, while `0.7` rejects it. Accepted IDs are appended unchanged, and the loop proceeds to the next position.
+This accepts the token with probability:
 
-| Proposed token probability | Draft `q(t)` | Target `p(t)` | Acceptance probability |
-| --- | ---: | ---: | ---: |
-| Target prefers it | 0.2 | 0.5 | 1 |
-| Target prefers it less | 0.5 | 0.2 | 0.4 |
-| Target forbids it | 1 | 0 | 0 |
-| Identical tiny probability | `1e-12` | `1e-12` | 0.01 because denominator is floored |
 
-The last row is a reference-specific detail. The denominator becomes `1e-10`, so identical distributions do not guarantee acceptance for an extremely rare supplied proposal. This differs from the ideal `p/q` ratio, which would be one.
+
+$$
+
+P(\text{accept }t)=\min\left(1,\frac{p_{\text{target}}(t)}
+                                       {p_{\text{draft}}(t)}\right)
+
+$$
+
+
+
+For example:
+
+- Target probability `0.6`, draft probability `0.3` → always accept.
+- Target probability `0.2`, draft probability `0.5` → accept with probability `0.4`.
+
+This rule reduces how often tokens that the draft model overproduces are kept.
+
+**2. If rejected, sample a replacement**
 
 ```python
 adjusted = torch.clamp(target_probs[i] - draft_probs[i], min=0)
+```
+
+For every vocabulary token, this computes:
+
+
+
+$$
+
+\text{adjusted}(x)=\max(p_{\text{target}}(x)-p_{\text{draft}}(x),0)
+
+$$
+
+
+
+It gives weight to tokens that the target model wants more often than the draft model proposes.
+
+For example:
+
+```text
+                  A      B      C
+target_probs    0.50   0.30   0.20
+draft_probs     0.20   0.60   0.20
+difference      0.30  -0.30   0.00
+clamped         0.30   0.00   0.00
+normalized      1.00   0.00   0.00
+```
+
+If the draft proposed `B`, it would be accepted with probability `0.30 / 0.60 = 0.5`. If rejected, its replacement would always be `A`.
+
+```python
 s = adjusted.sum()
 if s > 0:
     adjusted = adjusted / s
-else:
-    adjusted = torch.ones_like(adjusted) / adjusted.shape[0]
 ```
 
-After rejection, sample where the target needs more mass than the draft supplied. For `p=[0.2,0.8]` and `q=[0.5,0.5]`, the difference is `[-0.3,0.3]`, the positive part is `[0,0.3]`, and normalization gives `[0,1]`. Token one must replace a rejected token zero. If every positive difference is zero, the code falls back to uniform probabilities. That fallback can be reached when the denominator floor causes rejection with identical distributions.
+Normalization makes the weights sum to one. If all weights are zero, the code falls back to a uniform distribution.
 
 ```python
 accepted.append(torch.multinomial(adjusted, 1).item())
 return accepted
 ```
 
-The immediate return matters: a replacement changes the prefix, making later rows inappropriate. If the loop finishes without rejection, the final return simply gives the full accepted block.
+`torch.multinomial` samples one replacement token. The function then stops because later draft tokens were generated assuming the rejected token was part of the sequence; that context has changed.
 
-## Run acceptance, rejection, and the tiny-probability case
+**3. If every token passes, return them all**
 
-Load the reference solution first, then run:
+The final `return accepted` returns all `K` draft tokens. The result is a **Python list of token IDs**, including a replacement if rejection occurred.
 
-```python
-# Example: Verify accepted blocks, correction sampling, and the denominator floor
-torch.manual_seed(0)
-equal = torch.tensor([[0.7, 0.3], [0.2, 0.8]])
-assert speculative_decode(equal, equal, torch.tensor([0, 1])) == [0, 1]
+The acceptance rule and correction distribution together preserve the target model’s sampling distribution under the algorithm’s assumptions. See the [original speculative-decoding paper](https://proceedings.mlr.press/v202/leviathan23a/leviathan23a.pdf).
 
-target = torch.tensor([[0.0, 1.0], [0.5, 0.5]])
-draft = torch.tensor([[1.0, 0.0], [0.5, 0.5]])
-assert speculative_decode(target, draft, torch.tensor([0, 0])) == [1]
+For that guarantee, the inputs must be normalized probabilities, each draft token must actually be sampled from its corresponding draft distribution, and both models’ rows must use the same preceding context. The uniform fallback is only a safeguard; after a genuine rejection, it should be unnecessary with valid distributions and exact arithmetic.
 
-tiny = torch.tensor([[1e-12, 1.0 - 1e-12], [0.5, 0.5]], dtype=torch.float64)
-ratio = tiny[0, 0] / max(tiny[0, 0].item(), 1e-10)
-assert abs(ratio.item() - 0.01) < 1e-12
-torch.manual_seed(0)
-assert torch.rand(1).item() > ratio.item()
-torch.manual_seed(0)
-result = speculative_decode(tiny, tiny, torch.tensor([0, 1]))
-assert len(result) == 1 and result[0] in (0, 1)
-```
-
-The second call replaces a guaranteed rejection and skips position one. The last call exposes the floor rather than silently assuming identical rows always pass.
-
-## Common mistakes and reference limits
-
-The target-distribution argument assumes draft tokens were sampled from their stated distributions and every row matches its prefix; the floor slightly changes that ideal argument. This function does not run either model, generate proposals, handle EOS, or append an extra target token after full acceptance. It does not validate inputs, and `K=0` returns an empty list.
+This function only handles verification and correction. A full implementation also runs both models and usually samples one extra target token when all draft tokens are accepted.

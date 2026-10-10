@@ -1,16 +1,25 @@
 # Reference solution explanations
 
-These 41 guides explain the implementations checked into `solutions/`. The practice dashboard serves these files in its **Explanation** tab, beside the reference code. They are authored ahead of time; opening a guide does not generate new text or record a practice attempt.
+These 41 guides explain the implementations checked into `solutions/`. The practice dashboard serves these files in its **Explanation** tab, beside the reference code. They are generated ahead of time; opening a guide does not generate new text or record a practice attempt.
 
-Each guide teaches the actual reference code in small steps, with code excerpts, explanations of the key tensor operations, and worked examples showing intermediate values or shapes. Symbols are defined where they appear; formulas are connected to the operations that implement them. The guides also explain common mistakes and important limits of the reference.
+Each explanation was generated in a separate GPT-6.1 Sol session with **extra-high reasoning effort (`xhigh`)**, using only this prompt:
 
-Read a guide alongside its **Solution Code** tab. Walkthrough blocks are excerpts of that implementation. To run a block labeled `# Example:`, first run the complete reference code, including its imports, then run the example in the same Python session. These examples use small inputs and assertions to show the expected results. Change an input and follow how the intermediate values change.
+```text
+<solution_code>
+explain it
+```
+
+`<solution_code>` is the exact reference implementation shown in the **Solution Code** tab, including its imports. Notebook setup cells, demos, and judge calls are excluded. No old explanation or extra writing instructions are supplied to the model.
+
+The generated prose is preserved. Presentation changes add the problem title, convert LaTeX math delimiters for the viewer, and retain the existing interactive examples. [generation.json](generation.json) records the model, effort, prompt template, and per-file source and output hashes.
+
+Read a guide alongside its **Solution Code** tab. Code excerpts explain individual operations; example snippets may assume that the complete reference implementation and its imports have already been run. Small examples, formulas, shape tables, and tensor diagrams appear where the generated explanation uses them.
 
 Tables and tensor diagrams make the intermediate steps visible. Selected guides also have interactive examples in the dashboard: adjust a dropout probability, choose embedding IDs, change an attention query or mask, compare normalization axes, rotate feature pairs, explore sampling cutoffs, or inspect PPO clipping. These small examples illustrate the reference operations; they do not modify your practice code or record submissions.
 
 Interactive examples are embedded with a `torchcode-visual` fenced block naming the visual. Plain Markdown readers show that identifier; the dashboard renders the controls alongside the guide's static examples.
 
-When a reference implementation changes, update its matching explanation and check its examples too. Notebook setup cells, demos, and judge calls are excluded from the displayed solution code.
+When a reference implementation changes, regenerate its matching explanation with the same prompt and check its examples too.
 
 | # | Problem | Explanation | Reference notebook |
 |---|---|---|---|

@@ -1,82 +1,61 @@
 # Top-k and Top-p Sampling
 
-The function chooses one next token from a vocabulary. Temperature changes how concentrated the probabilities are, top-k removes tokens below a rank cutoff, and top-p removes the tail beyond a probability-mass cutoff. The remaining probabilities are renormalized before sampling.
+This function **randomly chooses a token index** from a 1D tensor of model scores (`logits`). Temperature controls randomness; top-k and top-p restrict which tokens can be chosen.
 
-## Inputs and output
+It works in four steps:
 
-`logits` is a floating tensor of shape `(V,)`, with one score per token ID. The return value is one Python integer ID. `top_k=0` disables top-k and `top_p=1.0` disables top-p. This reference processes one distribution, not a batch or a complete generated sequence.
+1. **Apply temperature**
+   ```python
+   logits = logits / max(temperature, 1e-8)
+   ```
+   - `temperature < 1`: favors higher-scoring tokens more strongly.
+   - `temperature > 1`: makes probabilities more evenly spread.
+   - `temperature = 1`: leaves scores unchanged.
 
-## Reading the actual code
+   The `max` prevents division by zero.
 
-```python
-logits = logits / max(temperature, 1e-8)
-```
+2. **Keep the top-k candidates**
+   ```python
+   top_k_val = logits.topk(top_k).values[-1]
+   logits[logits < top_k_val] = float('-inf')
+   ```
+   `top_k_val` is the kth-highest score. Scores below it become `-inf`, which gives them probability zero after softmax.
 
-Softmax cares about differences between logits. Dividing by temperature above one makes differences smaller and softens the distribution; a temperature between zero and one sharpens it. For logits `[0, log(4)]`, temperature one gives probabilities `[0.2, 0.8]`; temperature two gives `[1/3, 2/3]`; temperature `0.5` gives `[1/17, 16/17]`. The denominator floor makes zero and negative temperatures behave like an extremely small positive temperature. This division creates the working tensor, so later filtering does not overwrite the caller's original logits.
+   For example, `top_k=3` keeps the three highest-scoring tokens, plus any tokens tied at the cutoff. `top_k=0` disables this step.
 
-```python
-if top_k > 0:
-    top_k_val = logits.topk(top_k).values[-1]
-    logits[logits < top_k_val] = float('-inf')
-```
+3. **Apply top-p, also called nucleus sampling**
 
-`topk` returns its largest values in descending order, so `[-1]` is the kth-largest score. Every smaller score becomes negative infinity, whose softmax probability is zero. For scores `[4, 3, 3, 1]` and `top_k=2`, the cutoff is `3`. Both tokens tied at `3` survive, so the reference can keep more than two tokens.
+   The code sorts scores from highest to lowest, converts them to probabilities, then computes their cumulative sums.
 
-```python
-sorted_logits, sorted_idx = torch.sort(logits, descending=True)
-probs = torch.softmax(sorted_logits, dim=-1)
-cumsum = torch.cumsum(probs, dim=-1)
-mask = (cumsum - probs) > top_p
-sorted_logits[mask] = float('-inf')
-```
+   ```python
+   mask = (cumsum - probs) > top_p
+   ```
+   `cumsum - probs` is the total probability of the tokens **before** each token. A token is removed when that preceding total already exceeds `top_p`. This preserves the token that pushes the total past the cutoff.
 
-The nucleus filter works in sorted order. Crucially, `cumsum - probs` is the probability mass **before** each token. A token that first pushes cumulative mass over the threshold must remain: removing it could leave less than the requested mass.
+   For example:
 
-For sorted probabilities `[0.5, 0.25, 0.125, 0.125]` and `top_p=0.6`:
+   | Token | Probability | Probability before it | Keep with `top_p=0.7`? |
+   |---|---:|---:|---|
+   | A | 0.50 | 0.00 | Yes |
+   | B | 0.30 | 0.50 | Yes |
+   | C | 0.15 | 0.80 | No |
+   | D | 0.05 | 0.95 | No |
 
-| Sorted token | Probability | Cumulative including token | Mass before token | Masked? |
-| ---: | ---: | ---: | ---: | --- |
-| 0 | 0.500 | 0.500 | 0.000 | No |
-| 1 | 0.250 | 0.750 | 0.500 | No; this crosses 0.6 |
-| 2 | 0.125 | 0.875 | 0.750 | Yes |
-| 3 | 0.125 | 1.000 | 0.875 | Yes |
+   `scatter_` puts the filtered scores back into their original token-index order. `top_p=1.0` disables this step.
 
-The surviving mass `0.75` becomes probabilities `[2/3, 1/3, 0, 0]`. The strict `>` comparison also retains a token when its preceding mass equals the threshold. If both filters are enabled, these nucleus probabilities are computed **after top-k filtering**.
+4. **Normalize and sample**
+   ```python
+   probs = torch.softmax(logits, dim=-1)
+   return torch.multinomial(probs, 1).item()
+   ```
+   Softmax renormalizes the remaining candidates. `multinomial` randomly draws one index according to those probabilities, and `.item()` returns it as a Python integer.
 
-```python
-logits = torch.empty_like(logits).scatter_(0, sorted_idx, sorted_logits)
-probs = torch.softmax(logits, dim=-1)
-return torch.multinomial(probs, 1).item()
-```
+If both filters are enabled, **top-k runs first**, and top-p uses probabilities normalized over the surviving candidates.
 
-`scatter_` restores vocabulary order: filtered sorted position `i` is written to original ID `sorted_idx[i]`. Otherwise sampling would return a rank instead of the correct token ID. The last softmax renormalizes the survivors. `multinomial` samples one position, and `.item()` converts its one-element tensor to a Python integer.
+The function expects a single 1D logits vector, and `top_k` must not exceed its length.
+
+## Try it interactively
 
 ```torchcode-visual
 sampling
 ```
-
-## Run the cutoff example
-
-Load the reference solution first, then run:
-
-```python
-# Example: Keep the token crossing the nucleus threshold
-logits = torch.log(torch.tensor([0.5, 0.25, 0.125, 0.125]))
-probs = torch.softmax(logits, dim=-1)
-mask = (probs.cumsum(0) - probs) > 0.6
-assert torch.equal(mask, torch.tensor([False, False, True, True]))
-filtered = logits.clone()
-filtered[mask] = float('-inf')
-torch.testing.assert_close(torch.softmax(filtered, 0),
-                           torch.tensor([2/3, 1/3, 0.0, 0.0]))
-torch.manual_seed(7)
-draws = [sample_top_k_top_p(logits, top_p=0.6) for _ in range(40)]
-assert set(draws) == {0, 1}
-assert sample_top_k_top_p(logits, top_k=1) == 0
-```
-
-Repeated draws can contain only the two retained IDs; top-k one makes token zero the only possible result here.
-
-## Common mistakes and reference limits
-
-Masking `cumsum > top_p` removes the crossing token too early. Forgetting scatter returns wrong IDs. The function does not validate `top_k <= V`, probability ranges, empty inputs, or invalid logits. Random sampling requires an explicit seed for reproducible examples.

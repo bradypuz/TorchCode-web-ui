@@ -1,73 +1,75 @@
 # PPO Clipped Surrogate Loss
 
-PPO encourages actions with positive advantages and discourages actions with negative advantages. Its clipping rule stops rewarding an excessively large change in a helpful direction, while still penalizing changes that hurt the objective. The implementation expresses this rule by comparing two values for every response.
+This computes the **policy loss for PPO**. It encourages actions that performed better than expected and discourages actions that performed worse, while limiting the incentive to make large policy changes.
 
-## Inputs and output
+Each element corresponds to one sampled action:
 
-`new_logps`, `old_logps`, and `advantages` each have shape `(B,)`. The first two are current and rollout-policy log-probabilities for the same sampled actions or responses. Advantages are supplied estimates. `clip_ratio=0.2` gives ratio bounds `[0.8,1.2]`. The return is a scalar loss tensor.
+- `new_logps`: its log-probability under the current policy.
+- `old_logps`: its log-probability under the policy that collected the data.
+- `advantages`: how much better or worse that action was than expected. Positive means good; negative means bad.
 
-## Reading the actual code
+**1. Keep the old policy and advantages fixed**
 
 ```python
 old_logps_detached = old_logps.detach()
 adv_detached = advantages.detach()
 ```
 
-The old policy supplied the data; it is a baseline, not a target to optimize here. Advantages also act as fixed learning signals. Detaching both prevents gradients from changing these inputs. Current `new_logps` remains differentiable.
+`detach()` preserves the values but removes them from gradient computation. Training gradients flow through `new_logps`.
+
+**2. Calculate how the action’s probability changed**
 
 ```python
 ratios = torch.exp(new_logps - old_logps_detached)
 ```
 
-Subtracting logarithms and exponentiating yields `pi_new/pi_old`. If an action's probability rose from `0.2` to `0.3`, the difference is `log(1.5)` and the ratio is `1.5`. If it fell to `0.1`, the ratio is `0.5`. Equal policies give ratio one.
+Because these are log-probabilities:
+
+
+
+$$
+
+r = \exp(\log \pi_{\text{new}}-\log \pi_{\text{old}})
+  = \frac{\pi_{\text{new}}}{\pi_{\text{old}}}
+
+$$
+
+
+
+For example, `r = 1.3` means the action is now 30% more likely; `r = 0.7` means it is 30% less likely.
+
+**3. Compute the ordinary and clipped objectives**
 
 ```python
 unclipped = ratios * adv_detached
-clipped = torch.clamp(ratios, 1.0 - clip_ratio,
-                       1.0 + clip_ratio) * adv_detached
+clipped = torch.clamp(ratios, 0.8, 1.2) * adv_detached
 ```
 
-The first value is the ordinary importance-weighted objective. The second limits the ratio before multiplying by the advantage. With ratio `1.5` and advantage `+1`, these values are `1.5` and `1.2`. With advantage `-1`, they are `-1.5` and `-1.2`; the advantage's sign changes which value is smaller.
+The bounds are `[0.8, 1.2]` when `clip_ratio=0.2`.
+
+Maximizing `ratio * advantage` encourages increasing the probability of good actions and decreasing the probability of bad actions.
+
+**4. Choose the conservative objective and turn it into a loss**
 
 ```python
 return -torch.min(unclipped, clipped).mean()
 ```
 
-`torch.min` is elementwise, so each sample gets the more conservative objective independently. Negation lets gradient descent maximize its mean. Taking the minimum **after multiplying by the advantage** is the key sign-dependent behavior.
+The minimum prevents the objective from rewarding excessively large changes in the beneficial direction:
 
-| Ratio | Advantage | Unclipped | Clipped | Selected minimum | Learning behavior |
-| ---: | ---: | ---: | ---: | ---: | --- |
-| 1.5 | +1 | 1.5 | 1.2 | 1.2 | No extra reward above upper bound |
-| 0.5 | +1 | 0.5 | 0.8 | 0.5 | Penalize reducing a good action |
-| 1.5 | -1 | -1.5 | -1.2 | -1.5 | Penalize increasing a bad action |
-| 0.5 | -1 | -0.5 | -0.8 | -0.8 | No extra reward below lower bound |
+| Advantage | Ratio | Unclipped | Clipped | Selected |
+|---|---:|---:|---:|---:|
+| `+1` (good action) | `1.3` | `1.3` | `1.2` | `1.2` |
+| `−1` (bad action) | `0.7` | `−0.7` | `−0.8` | `−0.8` |
 
-For these four rows, the selected values sum to `-0.6`, their mean is `-0.15`, and the loss is `+0.15`. Rows one and four have zero gradient because the selected clipped branch is constant with respect to the ratio. Rows two and three still have a gradient despite being outside the clipping interval: their changes hurt the objective.
+For a good action, increasing its probability beyond `1.2 ×` receives no additional reward. For a bad action, decreasing its probability below `0.8 ×` receives no additional reward. Changes in the harmful direction still receive a penalty.
+
+Finally, `.mean()` averages across the batch, and the minus sign converts an objective to **maximize** into a loss to **minimize**.
+
+Clipping does **not** enforce a hard limit on probability changes; it limits the incentive supplied by this loss.
+
+## Try it interactively
 
 ```torchcode-visual
 ppo
 ```
-
-## Run the four sign cases
-
-Load the reference solution first, then run:
-
-```python
-# Example: Show PPO clipping depends on the advantage's sign
-old_logps = torch.full((4,), 0.2).log().requires_grad_()
-new_logps = torch.tensor([0.3, 0.1, 0.3, 0.1]).log().requires_grad_()
-advantages = torch.tensor([1.0, 1.0, -1.0, -1.0], requires_grad=True)
-loss = ppo_loss(new_logps, old_logps, advantages, clip_ratio=0.2)
-torch.testing.assert_close(loss, torch.tensor(0.15))
-assert loss.shape == ()
-loss.backward()
-torch.testing.assert_close(new_logps.grad, torch.tensor([0.0, -0.125, 0.375, 0.0]))
-assert old_logps.grad is None
-assert advantages.grad is None
-```
-
-The negative gradient in row two raises the good action's log-probability; the positive gradient in row three lowers the bad action's log-probability. The factor `1/4` comes from the batch mean.
-
-## Common mistakes and reference limits
-
-Clipping the log-probability difference uses the wrong bounds. Taking a maximum reverses the conservative rule. Detaching current scores removes learning. Shapes should all be `(B,)` to avoid accidental broadcasting. This is only the policy surrogate, with no value loss, entropy bonus, advantage normalization, rollout collection, or training loop. The code does not validate finite inputs or clip ratios; extreme differences can overflow during exponentiation. PPO loss values need not be positive.

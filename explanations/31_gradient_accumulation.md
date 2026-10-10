@@ -1,69 +1,49 @@
 # Gradient Accumulation
 
-To train on a batch that does not fit in memory, split it into micro-batches and add their gradients before updating parameters. PyTorch already adds successive backward results into each parameter's `.grad`; this function controls when gradients are cleared, scaled, and used.
+This function performs **one training update using gradient accumulation**: it processes several small batches, combines their gradients, then updates the model once. This saves memory compared with processing one large batch.
 
-## Inputs and output
+The arguments are:
 
-`model` is a trainable module, `optimizer` updates its parameters, and `loss_fn` returns a scalar tensor. `micro_batches` is a list of `(x, y)` pairs. Shapes depend on the model: our example uses input and target shapes `(1, 1)`. The function performs one optimizer update and returns a Python float containing the average micro-batch loss.
+- `model`: the neural network.
+- `optimizer`: updates the model’s parameters.
+- `loss_fn`: measures prediction error.
+- `micro_batches`: a collection of `(inputs, targets)` pairs.
 
-## Reading the actual code
+Here’s what each part does:
 
 ```python
 optimizer.zero_grad()
+```
+Clears gradients left over from previous training updates.
+
+```python
 total_loss = 0.0
 n = len(micro_batches)
 ```
-
-Clearing gradients once at the beginning removes contributions from the previous training step. `n` is the number of micro-batches, not their total number of examples. `total_loss` is a reporting number; it does not participate in differentiation.
+Starts a loss counter and counts the small batches.
 
 ```python
 for x, y in micro_batches:
     loss = loss_fn(model(x), y) / n
+```
+Computes predictions and their loss. Dividing by `n` makes each batch contribute an equal share to the average loss.
+
+```python
     loss.backward()
+```
+Computes gradients and **adds them to the existing parameter gradients**. The model’s weights do not change yet.
+
+```python
     total_loss += loss.item()
 ```
-
-For each pair, `model(x)` produces predictions using the same parameter values. Dividing the scalar loss by `n` **before** backward also divides its gradients by `n`. The next backward pass adds another contribution without clearing the previous one. Calling `.item()` extracts the scaled loss as a Python number for reporting; it does not erase the gradients that backward has already computed.
-
-Consider a bias-free model `prediction = w*x` starting at `w=0`. Two micro-batches contain `(x=1, y=2)` and `(x=3, y=6)`, and the loss is mean squared error. A single example has derivative `2*x*(w*x-y)`.
-
-| Micro-batch | Prediction | Unscaled MSE | Loss divided by 2 | Gradient added to `w.grad` | Accumulated gradient |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `x=1, y=2` | 0 | 4 | 2 | -2 | -2 |
-| `x=3, y=6` | 0 | 36 | 18 | -18 | -20 |
-
-The full two-example mean loss is `(4+36)/2 = 20`. Its derivative at zero is `(-4-36)/2 = -20`, exactly the accumulated gradient. Omitting the division would give `-40`, doubling an SGD update at the same learning rate.
+Converts the scaled loss into a Python number and adds it to the counter. The final value is the average of the micro-batch losses.
 
 ```python
 optimizer.step()
 return total_loss
 ```
+Updates the weights once using all accumulated gradients, then returns the loss for logging.
 
-The optimizer runs once after every backward pass. With SGD and `lr=0.1`, `w` becomes `0 - 0.1*(-20) = 2`. The returned loss is `2+18 = 20`, measured before that update. If we stepped inside the loop, the second forward would see a different `w`, and Adam would also advance its memories and step counter multiple times.
+For example, **4 micro-batches of 8 examples** produce one update with an effective batch size of **32**.
 
-## Run the example
-
-Load the reference solution first, then run:
-
-```python
-# Example: Match two accumulated micro-batches to one full batch
-model = nn.Linear(1, 1, bias=False)
-with torch.no_grad():
-    model.weight.zero_()
-optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
-micro_batches = [(torch.tensor([[1.0]]), torch.tensor([[2.0]])),
-                 (torch.tensor([[3.0]]), torch.tensor([[6.0]]))]
-reported_loss = accumulated_step(model, optimizer, nn.MSELoss(), micro_batches)
-assert reported_loss == 20.0
-torch.testing.assert_close(model.weight.grad, torch.tensor([[-20.0]]))
-torch.testing.assert_close(model.weight, torch.tensor([[2.0]]))
-full_x = torch.tensor([[1.0], [3.0]])
-full_y = torch.tensor([[2.0], [6.0]])
-torch.testing.assert_close(model(full_x), full_y)
-```
-
-The final equality happens because this tiny example lies exactly on the fitted line after one particular SGD step. Gradient accumulation itself does not guarantee one-step convergence.
-
-## Common mistakes and reference limits
-
-Clearing gradients inside the loop discards earlier contributions. Equal weighting of micro-batch means equals a full-batch mean when micro-batches have equal sizes; unequal sizes require weighting by example count. BatchNorm and other batch-dependent behavior can also break full-batch equivalence. The reference expects a scalar loss, does not set training mode, and has no nonempty-list guard. With no micro-batches, it still clears gradients, calls `step()`, and returns `0.0`.
+Assuming equal-sized micro-batches and a loss averaged over examples, this matches the gradient of one combined batch when the model’s computation is independent of batch composition. Layers such as BatchNorm can make the results differ.

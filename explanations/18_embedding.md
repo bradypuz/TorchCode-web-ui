@@ -1,75 +1,52 @@
 # Embedding lookup
 
-## What the layer does
+This defines an **embedding layer**: it maps each integer ID—for example, a word’s ID—to a trainable vector.
 
-Replace each integer ID with a learned vector. For words, an ID identifies a vocabulary entry; the corresponding row of the table contains that word's features. The operation is a lookup, not multiplication by the numeric ID. ID `2` means “take row 2,” not “double another row.”
+1. **Create a PyTorch module**
+   ```python
+   class MyEmbedding(nn.Module):
+   ```
+   Inheriting from `nn.Module` lets this layer work inside PyTorch models. `super().__init__()` initializes the module’s machinery.
 
-`num_embeddings` is the number of rows, and `embedding_dim` is the number of numbers in each row. The weight table has shape `(num_embeddings, embedding_dim)`. If `indices` has shape `(B, S)`, the output has shape `(B, S, embedding_dim)`, where `B` is the batch size and `S` the number of IDs per sequence. A 1-D input `(S,)` produces `(S, embedding_dim)`. In general, the lookup appends one vector dimension to the indices' shape.
+2. **Create the embedding table**
+   ```python
+   self.weight = nn.Parameter(torch.randn(num_embeddings, embedding_dim))
+   ```
+   - `num_embeddings`: how many IDs have vectors.
+   - `embedding_dim`: how many numbers each vector contains.
+   - `torch.randn(...)`: initializes the table with random values from a standard normal distribution.
 
-## Create a trainable table
+   The table’s shape is `[num_embeddings, embedding_dim]`; each **row is one embedding vector**.
+
+   `nn.Parameter` registers the table as a trainable parameter, so it appears in `model.parameters()` and can be passed to an optimizer. [PyTorch documentation](https://docs.pytorch.org/docs/stable/generated/torch.nn.parameter.Parameter.html)
+
+3. **Look up vectors**
+   ```python
+   def forward(self, indices):
+       return self.weight[indices]
+   ```
+   Each integer in `indices` selects the corresponding row of the table.
+
+For example:
 
 ```python
-super().__init__()
-self.weight = nn.Parameter(torch.randn(num_embeddings, embedding_dim))
+embedding = MyEmbedding(num_embeddings=5, embedding_dim=3)
+# embedding.weight has shape [5, 3]
+
+indices = torch.tensor([2, 0, 2], dtype=torch.long)
+vectors = embedding(indices)  # Calls forward()
+
+print(vectors.shape)  # torch.Size([3, 3])
 ```
 
-`torch.randn(...)` fills the table with random values from a normal distribution centered at zero. These initial vectors have no vocabulary meaning yet. Learning changes them.
+The output contains row **2**, then row **0**, then row **2** again. The first and third vectors are identical because they use the same ID.
 
-Wrapping the tensor in `nn.Parameter` makes it a registered trainable parameter. It will appear in the module's parameter list, and it requests gradients by default. Without that wrapper, an ordinary tensor assigned as `self.weight` would not automatically be included in an optimizer constructed from `model.parameters()`.
+For integer tensor inputs, the output shape is the input shape with `embedding_dim` appended: `[batch_size, sequence_length]` becomes `[batch_size, sequence_length, embedding_dim]`. This is the basic embedding lookup behavior. [PyTorch documentation](https://docs.pytorch.org/docs/main/generated/torch.nn.functional.embedding.html)
 
-## Let tensor indexing do the lookup
+During training, backpropagation computes gradients for the selected rows, and an optimizer can update their values. **The vectors are learned; the integer IDs are not.**
 
-```python
-return self.weight[indices]
-```
-
-For `indices = [2, 0, 2]`, this returns rows 2, 0, and 2 in exactly that order. Both appearances of row 2 have the same values. The operation does not sort IDs or remove duplicates.
-
-For a matrix of IDs, every coordinate receives its own row vector. If `indices[1, 0]` is `2`, then `output[1, 0, :]` is `weight[2, :]`. The extra final dimension represents features; the existing dimensions still represent the input's arrangement of tokens.
-
-## Trace a lookup and repeated-row gradients
-
-Use a three-row table with two features per row:
-
-| ID | Weight row | Positions requesting it in `[[2, 0], [2, 1]]` |
-|---|---|---|
-| `0` | `[10, 11]` | `(0, 1)` |
-| `1` | `[20, 21]` | `(1, 1)` |
-| `2` | `[30, 31]` | `(0, 0)` and `(1, 0)` |
-
-The output arrangement is:
-
-```text
-indices: (2, 2)                 output: (2, 2, 2)
-[[2, 0],                        [[[30, 31], [10, 11]],
- [2, 1]]                         [[30, 31], [20, 21]]]
-```
-
-The repeated lookup matters during learning. Suppose the loss is the sum of every output number. Each appearance contributes a gradient `[1, 1]` to the table row it read. Row 2 is read twice, so these contributions add to `[2, 2]`. Rows 0 and 1 receive `[1, 1]` each. A row not selected anywhere would receive zero gradient for this loss.
+## Try it interactively
 
 ```torchcode-visual
 embedding
 ```
-
-Change the selected IDs in the visual to see how output vectors repeat and gradient counts accumulate at their source rows.
-
-```python
-# Example: Look up a grid of IDs and accumulate repeated-row gradients
-layer = MyEmbedding(num_embeddings=3, embedding_dim=2)
-with torch.no_grad():
-    layer.weight.copy_(torch.tensor([[10., 11.], [20., 21.], [30., 31.]]))
-indices = torch.tensor([[2, 0], [2, 1]], dtype=torch.long)
-out = layer(indices)
-expected = torch.tensor([[[30., 31.], [10., 11.]], [[30., 31.], [20., 21.]]])
-assert out.shape == (2, 2, 2)
-assert torch.equal(out, expected)
-out.sum().backward()
-assert torch.equal(layer.weight.grad, torch.tensor([[1., 1.], [1., 1.], [2., 2.]]))
-assert torch.equal(layer(torch.tensor([1, 1])), torch.tensor([[20., 21.], [20., 21.]]))
-```
-
-The second lookup shows the same rule for a 1-D index tensor. The table still has just one row for ID 1; repeating an ID does not create additional trainable rows. Gradients go to the floating-point table, while integer IDs themselves are not differentiable.
-
-## Common mistakes and reference scope
-
-Use integer indices, normally `torch.long`, and keep vocabulary IDs within `0` through `num_embeddings - 1`. Direct PyTorch indexing accepts negative indices by counting backward from the table's end; that is a behavior of this reference, not usually a desirable vocabulary convention. There is no special padding row, sparse-gradient option, or automatic rescaling of frequently repeated IDs. Repetition simply adds gradient contributions.
