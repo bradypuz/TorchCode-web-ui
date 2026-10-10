@@ -1,31 +1,86 @@
 # Beam Search Decoding
 
-## Intuition
-
-Greedy decoding can pick a promising token that leads to a poor sequence. Beam search keeps several candidate prefixes so a slightly weaker early choice can win after later probabilities are considered. Each candidate carries the sum of its token log-probabilities.
+Beam search keeps several possible continuations alive. Each prefix carries the sum of its token log-probabilities. A prefix that starts slightly worse can eventually win if its later tokens are more likely.
 
 ## Inputs and output
 
-`log_prob_fn` receives the current sequence as a one-dimensional token tensor and returns `(V,)` next-token log-probabilities. `start_token` and `eos_token` are integer IDs. `beam_width` controls the number of active candidates. `max_len` limits expansion rounds after the start token, so returned length can be up to `max_len + 1`. The result is a Python list of integer IDs including the start token.
+`log_prob_fn` receives a one-dimensional token tensor containing the current prefix and returns next-token log-probabilities of shape `(V,)`. The other inputs are integer start/EOS IDs, a beam width, and a maximum number of expansion rounds. The output is a Python list of token IDs including the start token. Its length is at most `max_len + 1`.
 
-## Implementation walkthrough
+## Reading the actual code
 
-1. Initialize a single beam `(0.0, [start_token])` and a separate completed-sequence list.
-2. In each round, move beams already ending in EOS to the completed list without extending them.
-3. For every other beam, ask the callback for next-token log-probabilities and expand only its top `beam_width` tokens.
-4. Add each new log-probability to the prefix score. Sort all expansions together and retain the highest-scoring `beam_width` candidates.
-5. Stop when no expansions remain or the loop reaches `max_len`. Rank completed sequences together with the remaining beams and return the best sequence.
+```python
+beams = [(0.0, [start_token])]
+completed = []
+for _ in range(max_len):
+    candidates = []
+```
 
-## Why it works
+A beam is a `(score, sequence)` tuple. Score zero means no generated-token log-probabilities have been added yet; the start token itself is not scored. `completed` stores sequences that have finished, while `candidates` is rebuilt each expansion round.
 
-Multiplication of conditional token probabilities becomes addition in log space:
+```python
+if seq[-1] == eos_token:
+    completed.append((score, seq))
+    continue
+log_probs = log_prob_fn(torch.tensor(seq))
+topk_lp, topk_idx = log_probs.topk(beam_width)
+```
 
-$$
-\log P(y_1,\ldots,y_L\mid y_0)=\sum_{t=1}^{L}\log P(y_t\mid y_0,\ldots,y_{t-1})
-$$
+A prefix already ending in EOS moves to the completed list and gets no further tokens. Every other prefix is passed to the callback. The reference creates a fresh CPU tensor here. Each active prefix contributes its best `beam_width` next tokens; weaker local choices cannot enter the global best `beam_width` because that same prefix already has enough stronger choices.
 
-Comparing cumulative scores lets multiple early paths compete. Keeping each prefix's best `beam_width` extensions is sufficient for selecting that many candidates from the combined extensions. The judge includes a case where width two finds a better completed path than greedy decoding.
+```python
+for j in range(beam_width):
+    candidates.append((score + topk_lp[j].item(),
+                       seq + [topk_idx[j].item()]))
+candidates.sort(key=lambda x: x[0], reverse=True)
+beams = candidates[:beam_width]
+```
 
-## Pitfalls and reference scope
+Appending to a copy of `seq` preserves the old prefix. Scores **add** because `log(P(prefix)*P(next|prefix))` equals the sum of the two logarithms. Higher scores win; for negative log-probabilities, `-1` beats `-2`. The sort combines expansions from all prefixes before pruning.
 
-The actual reference does **not** stop immediately when the best beam reaches EOS, despite that wording in the template: other active beams continue expanding. A final active sequence may win even if it has not reached EOS. Scores have no length normalization, so raw log-probabilities tend to favor shorter sequences. This is a finite-width heuristic, not a guarantee of the globally most likely sequence. The callback receives a newly created CPU tensor. The reference has no device option, positive-width validation, vocabulary-size guard, batching, or model-cache management.
+Here is a width-two example. After the start token, A has probability `0.6` and B has `0.4`. A then offers A with `0.6` and EOS with `0.4`; B offers EOS with `0.9` and B with `0.1`.
+
+| Round-two candidate | Sequence probability | Sum of log-probabilities | Kept? |
+| --- | ---: | ---: | --- |
+| A, A | `0.6*0.6 = 0.36` | approximately -1.022 | Yes |
+| B, EOS | `0.4*0.9 = 0.36` | approximately -1.022 | Yes |
+| A, EOS | `0.6*0.4 = 0.24` | approximately -1.427 | No |
+| B, B | `0.4*0.1 = 0.04` | approximately -3.219 | No |
+
+At the next round, B/EOS becomes completed. A/A offers EOS with probability `0.9`, leaving its full sequence probability at `0.324`. B/EOS's `0.36` wins. Width one would discard B in the first round and return A/A/EOS instead.
+
+```python
+if not candidates:
+    break
+# After the expansion loop:
+all_seqs = completed + beams
+all_seqs.sort(key=lambda x: x[0], reverse=True)
+return all_seqs[0][1]
+```
+
+When every active beam has ended, no expansion remains. Otherwise the loop continues until its round limit. Final ranking includes both completed sequences and remaining active beams, so a result need not end in EOS.
+
+## Run the branching example
+
+Load the reference solution first, then run:
+
+```python
+# Example: A weaker first token wins with a wider beam
+def next_log_probs(seq):
+    ids = seq.tolist()
+    if len(ids) == 1:
+        probs = [0.0, 0.6, 0.4, 0.0]
+    elif ids[-1] == 2:
+        probs = [0.0, 0.0, 0.1, 0.9]
+    elif len(ids) == 2:
+        probs = [0.0, 0.6, 0.0, 0.4]
+    else:
+        probs = [0.0, 0.1, 0.0, 0.9]
+    return torch.tensor(probs).log()
+
+assert beam_search(next_log_probs, 0, 3, 2, 3) == [0, 2, 3]
+assert beam_search(next_log_probs, 0, 3, 1, 3) == [0, 1, 1, 3]
+```
+
+## Common mistakes and reference limits
+
+The reference continues other beams after one reaches EOS; it does not immediately stop at the first finished best beam. It has no length normalization, so cumulative log-probabilities tend to favor shorter sequences. Finite-width pruning is a heuristic, and discarded paths cannot return. The code assumes a positive width no larger than the vocabulary and does not handle batching or model caches.

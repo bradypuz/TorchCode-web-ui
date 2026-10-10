@@ -8,7 +8,8 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
-import { Play, RotateCcw, ChevronDown, Check, X, AlertCircle, Sparkles, ArrowUpRight } from 'lucide-react';
+import { Play, RotateCcw, ChevronDown, Check, X, AlertCircle, Sparkles, ArrowUpRight, History } from 'lucide-react';
+import SubmissionHistory, { type HistoricalSubmission } from './SubmissionHistory';
 import { Allotment } from "allotment";
 import "allotment/dist/style.css";
 
@@ -103,7 +104,11 @@ export default function Home() {
   const [code, setCode] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [results, setResults] = useState<SubmissionResponse | null>(null);
-  const [activeTab, setActiveTab] = useState<'problem' | 'results'>('problem');
+  const [activeTab, setActiveTab] = useState<'problem' | 'results' | 'history'>('problem');
+  const [loadedSubmission, setLoadedSubmission] = useState<HistoricalSubmission | null>(null);
+  const [previousDraft, setPreviousDraft] = useState<{ code: string; hintUsed: boolean; results: SubmissionResponse | null; loadedSubmission: HistoricalSubmission | null } | null>(null);
+  const [historyRevision, setHistoryRevision] = useState(0);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [solvedTasks, setSolvedTasks] = useState<Record<string, boolean>>({});
   const [userId, setUserId] = useState<string | null>(null);
   const [profileName, setProfileName] = useState('You');
@@ -204,6 +209,8 @@ export default function Home() {
         const legacyCode = userId === 'local' ? readSavedValue(`torchcode_code_${selectedTaskId}`) : null;
         setCode(scopedCode ?? legacyCode ?? data.initial_code);
         setResults(null);
+        setLoadedSubmission(null);
+        setPreviousDraft(null);
         setActiveTab('problem');
         setHintUsed(false);
         setReviewState('idle');
@@ -233,6 +240,8 @@ export default function Home() {
     setTaskDetails(null);
     setTaskError(null);
     setResults(null);
+    setLoadedSubmission(null);
+    setPreviousDraft(null);
     setHintUsed(false);
     setIsSubmitting(false);
     setReviewState('idle');
@@ -245,7 +254,7 @@ export default function Home() {
   };
 
   const handleRunCode = async () => {
-    if (!selectedTaskId || !userId || taskDetails?.id !== selectedTaskId) return;
+    if (!selectedTaskId || !userId || taskDetails?.id !== selectedTaskId || isLoadingHistory) return;
     const controller = new AbortController();
     submissionControllerRef.current?.abort();
     submissionControllerRef.current = controller;
@@ -266,6 +275,7 @@ export default function Home() {
       const data: SubmissionResponse = await res.json();
       if (controller.signal.aborted) return;
       setResults(data);
+      setHistoryRevision(previous => previous + 1);
       setIsSubmitting(false);
       
       if (data.success) {
@@ -325,15 +335,42 @@ export default function Home() {
   };
 
   const handleReset = () => {
-    if (taskDetails && selectedTaskId && userId) {
+    if (taskDetails && selectedTaskId && userId && !isLoadingHistory) {
       saveValue(draftKey(userId, selectedTaskId), null);
       if (userId === 'local') saveValue(`torchcode_code_${selectedTaskId}`, null);
       setCode(taskDetails.initial_code);
       setResults(null);
+      setLoadedSubmission(null);
+      setPreviousDraft(null);
       setHintUsed(false);
       setHintResetCounter(previous => previous + 1);
       setReviewState('idle');
     }
+  };
+
+  const handleLoadSubmission = (submission: HistoricalSubmission) => {
+    if (isSubmitting || submission.code === null || submission.task_id !== selectedTaskId || !userId || taskDetails?.id !== selectedTaskId) return;
+    setPreviousDraft({ code, hintUsed, results, loadedSubmission });
+    setCode(submission.code);
+    saveValue(draftKey(userId, selectedTaskId), submission.code);
+    setLoadedSubmission(submission);
+    setResults(null);
+    setHintUsed(hintUsed || submission.hint_used);
+    setReviewState('idle');
+    editorRef.current?.setPosition({ lineNumber: 1, column: 1 });
+    editorRef.current?.setScrollTop(0);
+    editorRef.current?.focus();
+  };
+
+  const handleUndoHistoryLoad = () => {
+    if (!previousDraft || !selectedTaskId || !userId || isSubmitting) return;
+    setCode(previousDraft.code);
+    saveValue(draftKey(userId, selectedTaskId), previousDraft.code);
+    setHintUsed(previousDraft.hintUsed);
+    setResults(previousDraft.results);
+    setLoadedSubmission(previousDraft.loadedSubmission);
+    setPreviousDraft(null);
+    editorRef.current?.focus();
   };
 
   return (
@@ -413,7 +450,7 @@ export default function Home() {
           </a>
           <button 
             onClick={handleReset}
-            disabled={!taskDetails || taskDetails.id !== selectedTaskId || isSubmitting}
+            disabled={!taskDetails || taskDetails.id !== selectedTaskId || isSubmitting || isLoadingHistory}
             className="flex items-center px-4 py-2 rounded-md bg-[#3c3c3c] hover:bg-[#4c4c4c] disabled:opacity-50 transition-colors"
           >
             <RotateCcw className="w-4 h-4 mr-2" />
@@ -421,7 +458,7 @@ export default function Home() {
           </button>
           <button 
             onClick={handleRunCode}
-            disabled={isSubmitting || !taskDetails || taskDetails.id !== selectedTaskId}
+            disabled={isSubmitting || isLoadingHistory || !taskDetails || taskDetails.id !== selectedTaskId}
             className="flex items-center px-6 py-2 rounded-md bg-green-600 hover:bg-green-500 disabled:opacity-50 transition-colors font-medium"
           >
             {isSubmitting ? (
@@ -462,10 +499,33 @@ export default function Home() {
                 </span>
               )}
             </button>
+            <button
+              className={`flex items-center gap-2 px-5 py-3 font-medium transition-colors disabled:opacity-50 ${activeTab === 'history' ? 'text-white border-b-2 border-orange-400 bg-[#1e1e1e]' : 'text-gray-400 hover:text-gray-200'}`}
+              onClick={() => setActiveTab('history')}
+              disabled={!taskDetails || taskDetails.id !== selectedTaskId}
+              aria-pressed={activeTab === 'history'}
+              title="View your submissions for this problem"
+            >
+              <History className="h-4 w-4" />History
+            </button>
           </div>
 
           <div className="flex-1 overflow-y-auto p-6">
-            {activeTab === 'problem' ? (
+            {activeTab === 'history' ? (
+              taskDetails && selectedTaskId && userId ? <SubmissionHistory
+                key={`${userId}:${selectedTaskId}:${historyRevision}`}
+                userId={userId}
+                taskId={selectedTaskId}
+                title={taskDetails.title}
+                profileName={profileName}
+                disabled={isSubmitting}
+                loadedId={loadedSubmission?.id ?? null}
+                canUndo={previousDraft !== null}
+                onLoad={handleLoadSubmission}
+                onUndo={handleUndoHistoryLoad}
+                onLoadingChange={setIsLoadingHistory}
+              /> : <p className="text-gray-400">Choose a problem to view its submissions.</p>
+            ) : activeTab === 'problem' ? (
               <div className="markdown-body">
                 {taskDetails ? (
                   <>
@@ -639,10 +699,20 @@ export default function Home() {
 
           {/* Right Pane: Code Editor */}
           <div className="h-full min-h-0 min-w-0 flex flex-col bg-[#1e1e1e]">
-            <div className="flex items-center px-4 py-2 bg-[#252526] border-b border-[#404040] text-sm text-gray-400">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 bg-[#252526] border-b border-[#404040] text-sm text-gray-400">
               <span className="font-medium text-gray-300 flex items-center">
                 <span className="w-2 h-2 rounded-full bg-green-500 mr-2"></span> Python (PyTorch)
               </span>
+              <div className="flex items-center gap-3">
+                {loadedSubmission && <span className="text-xs text-orange-300">Loaded #{loadedSubmission.id}</span>}
+                <button
+                  onClick={() => setActiveTab(activeTab === 'history' ? 'problem' : 'history')}
+                  disabled={!taskDetails || taskDetails.id !== selectedTaskId}
+                  aria-expanded={activeTab === 'history'}
+                  aria-controls="submission-history-pane"
+                  className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${activeTab === 'history' ? 'border-orange-400/40 bg-orange-400/10 text-orange-200' : 'border-[#454545] text-gray-300 hover:bg-[#333333]'}`}
+                ><History className="h-3.5 w-3.5" />Submission history</button>
+              </div>
             </div>
             <div className="flex-1 min-h-0 min-w-0">
               <Editor
@@ -654,6 +724,7 @@ export default function Home() {
                 onChange={(value) => {
                   const newCode = value || "";
                   setCode(newCode);
+                  if (loadedSubmission && newCode !== loadedSubmission.code) setLoadedSubmission(null);
                   if (selectedTaskId && userId && taskDetails?.id === selectedTaskId) {
                     saveValue(draftKey(userId, selectedTaskId), newCode);
                   }

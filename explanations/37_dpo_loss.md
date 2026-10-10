@@ -1,36 +1,67 @@
 # Direct Preference Optimization Loss
 
-## Intuition
-
-Each training example contains a preferred response and a rejected response. DPO asks the current policy to increase its preference for the chosen response relative to a reference policy. The reference-relative comparison focuses on how the policy changes the pair's odds rather than the raw likelihood of either response alone.
+DPO trains on preferred and rejected response pairs. It rewards increasing the policy's chosen-versus-rejected preference relative to a fixed reference policy. The function receives response log-probabilities that have already been computed; it does not run a language model.
 
 ## Inputs and output
 
-All four inputs have shape `(B,)`: policy and reference log-probabilities for chosen and rejected responses. These are already-computed response scores, not vocabulary logits. `beta` is a scalar scale, defaulting to `0.1`. The result is one scalar tensor, averaged across preference pairs.
+`policy_chosen_logps`, `policy_rejected_logps`, `ref_chosen_logps`, and `ref_rejected_logps` each have shape `(B,)`, one score per pair. `beta` scales the comparison and defaults to `0.1`. The return is a scalar loss tensor averaged over the batch. These scores are response log-probabilities, not raw vocabulary logits.
 
-## Implementation walkthrough
+## Reading the actual code
 
-1. Compute `chosen_rewards = beta * (policy_chosen_logps - ref_chosen_logps)`. Subtracting log-probabilities gives the logarithm of a policy-to-reference probability ratio.
-2. Compute the same reference-relative score for rejected responses.
-3. Subtract rejected scores from chosen scores to obtain a per-pair preference margin.
-4. Apply `F.logsigmoid`, negate, and take the batch mean. The functional implementation evaluates the log-sigmoid stably without explicitly forming a potentially tiny sigmoid value.
+```python
+chosen_rewards = beta * (policy_chosen_logps - ref_chosen_logps)
+```
 
-## Why it works
+Subtracting logarithms forms a log probability ratio: `log(policy/reference)`. If the chosen score moves from reference `-1.5` to policy `-1`, the difference is `0.5`. This means the policy assigns that response `exp(0.5)` times the reference probability. `beta` changes the size of the training margin; the name `chosen_rewards` is an internal reference-relative score rather than an externally supplied reward.
 
-For chosen response $y_w$ and rejected response $y_l$, define:
+```python
+rejected_rewards = beta * (policy_rejected_logps - ref_rejected_logps)
+```
 
-$$
-z=\beta\left[\log\pi_\theta(y_w)-\log\pi_{\mathrm{ref}}(y_w)-\log\pi_\theta(y_l)+\log\pi_{\mathrm{ref}}(y_l)\right]
-$$
+The rejected response is evaluated in exactly the same units. With rejected policy score `-2` and reference score `-1.5`, the difference is `-0.5`. At `beta=1`, subtracting rejected reward from chosen reward gives margin `0.5 - (-0.5) = 1`.
 
-$$
-\mathcal L=-\frac{1}{B}\sum_{i=1}^{B}\log\sigma(z_i)
-$$
+```python
+return -F.logsigmoid(chosen_rewards - rejected_rewards).mean()
+```
 
-A large positive margin yields a small loss. A negative margin yields a larger penalty. When the policy and reference have the same chosen-versus-rejected preference, the margin is zero and the per-pair loss is $\log 2$. Its derivative with respect to the margin is $\sigma(z)-1$, so gradient descent encourages a larger chosen-relative advantage. Beta controls the scale of this comparison and its gradients.
+`logsigmoid` computes the logarithm of the sigmoid stably. Negation makes the result a loss to minimize. A positive margin means the chosen response gained more relative to the reference than the rejected response did; sigmoid approaches one, and loss approaches zero. `.mean()` averages pairs rather than vocabulary tokens.
 
-The judge checks easy and hard pairs, agreement with the formula, gradients to both policy scores, and the effect of changing beta.
+| Pair at `beta=1` | Chosen relative score | Rejected relative score | Margin | Loss |
+| --- | ---: | ---: | ---: | ---: |
+| Policy improves chosen preference | 0.5 | -0.5 | 1 | approximately 0.313262 |
+| Policy matches reference preference | 0 | 0 | 0 | approximately 0.693147 |
+| Policy reverses chosen preference | -0.5 | 0.5 | -1 | approximately 1.313262 |
 
-## Pitfalls and reference scope
+The reference's default `beta=0.1` would shrink margins `1` and `-1` to `0.1` and `-0.1`. It changes both loss sensitivity and gradient scale.
 
-Subtract log-probabilities; do not divide them or apply softmax across the batch. Reversing the chosen/rejected subtraction reverses the learning signal. The reference does not detach reference log-probabilities internally: callers should provide frozen reference scores when that is intended. It does not compute token masks, sum token log-probabilities, sample preference pairs, or validate input shapes and beta. Those steps belong outside this scalar objective.
+## Why the signs train the desired preference
+
+For a pair's margin `z`, the derivative of `-log(sigmoid(z))` is `sigmoid(z)-1`, which is negative. The margin contains `+beta*policy_chosen_logps` and `-beta*policy_rejected_logps`. Consequently, gradient descent raises the chosen log-probability and lowers the rejected log-probability. This describes gradients with respect to the supplied scores; model parameters receive those signals through the score computation.
+
+At margin one and `beta=1`, a single pair's chosen derivative is approximately `-0.268941` and rejected derivative is `+0.268941`. Taking a batch mean divides each pair's contribution by `B`.
+
+## Run loss and gradient directions
+
+Load the reference solution first, then run:
+
+```python
+# Example: Compare easy and hard preferences and inspect gradient signs
+chosen = torch.tensor([-1.0, -2.0], requires_grad=True)
+rejected = torch.tensor([-2.0, -1.0], requires_grad=True)
+reference = torch.tensor([-1.5, -1.5])
+loss = dpo_loss(chosen, rejected, reference, reference, beta=1.0)
+expected = torch.tensor((0.3132616875 + 1.3132616875) / 2)
+torch.testing.assert_close(loss, expected)
+assert loss.shape == ()
+loss.backward()
+torch.testing.assert_close(chosen.grad, torch.tensor([-0.13447071, -0.36552929]))
+torch.testing.assert_close(rejected.grad, -chosen.grad)
+zero_margin = dpo_loss(reference, reference, reference, reference)
+torch.testing.assert_close(zero_margin, torch.tensor(0.6931471806))
+```
+
+The difficult second pair gets a larger correction because its preference margin is negative.
+
+## Common mistakes and reference limits
+
+Do not divide log-probabilities or apply softmax across the batch. Reversing chosen and rejected reverses the signal. The code does not detach reference inputs; callers should supply frozen reference scores when that is intended. Matching `(B,)` shapes avoids unintended broadcasting. Token summation, padding masks, response generation, and input validation happen outside this three-line loss.

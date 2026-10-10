@@ -1,39 +1,51 @@
-# GELU Activation
+# GELU activation
 
-## Goal and intuition
+## What this function does
 
-Implement the exact Gaussian Error Linear Unit as an elementwise activation. GELU smoothly scales an input according to the standard normal cumulative distribution function. Large positive values mostly pass through; large negative values are pushed toward zero. Unlike ReLU, small negative values can still produce a negative output.
+GELU changes each input number independently using a smooth curve. Large positive values mostly pass through. Large negative values get strongly reduced, while small negative values can remain negative. This makes it different from ReLU, which sets every negative number to exactly zero.
 
-## Inputs and outputs
+The input `x` is a floating-point tensor of any shape, and the output has the same shape. There are no learned parameters, no batch statistics, and no interaction between positions. If `x` has shape `(B, S, D)`, where `B` is the batch size, `S` the sequence length, and `D` the feature count, the function transforms all `B * S * D` numbers separately.
 
-- `x`: a floating tensor of any shape.
-- Output: a floating tensor with the same shape.
+## Read the exact expression
 
-No parameters, reductions, or changes to the feature dimensions are involved. Every tensor element is transformed independently, so the same implementation works for a vector, a matrix, or a batch of token features.
+```python
+return 0.5 * x * (1.0 + torch.erf(x / math.sqrt(2.0)))
+```
 
-## Walk through the reference
+Start with `x / math.sqrt(2.0)`. This rescales each number for the error function, `erf`. The error function is a smooth mathematical function ranging from approximately `-1` to `1`. At zero it is zero; positive inputs give positive results and negative inputs give negative results.
 
-1. Divide `x` by the scalar `math.sqrt(2.0)`.
-2. Apply `torch.erf`, the Gaussian error function, elementwise.
-3. Add one and multiply by `0.5` to obtain the standard normal cumulative probability at `x`.
-4. Multiply that probability by the original `x` and return the result.
+Next, `1.0 + torch.erf(...)` shifts that range to approximately zero through two. Multiplication by `0.5` makes a factor between zero and one. Finally, multiplication by `x` scales the original input using this factor. Scalars such as `0.5` apply to every tensor entry automatically.
 
-## Why it works
+The combined factor `0.5 * (1 + erf(x / sqrt(2)))` is also the probability that a standard normal random number is less than `x`. You do not need to draw any random numbers to compute it: `torch.erf` evaluates the function directly. GELU itself is deterministic.
 
-The standard normal cumulative distribution function has this error-function form:
+For `x = 1`, the factor is about `0.8413`, so the result is `0.8413`. For `x = -1`, it is about `0.1587`, giving `-0.1587`. At zero the factor is one half, but multiplying by zero still returns zero.
 
-$$
-\Phi(x)=\frac{1}{2}\left(1+\operatorname{erf}\left(\frac{x}{\sqrt{2}}\right)\right)
-$$
+## See the curve through concrete values
 
-Therefore:
+| Input `x` | Scaling factor | GELU output | ReLU output |
+|---|---|---|---|
+| `-2` | `0.02275` | `-0.04550` | `0` |
+| `-1` | `0.15866` | `-0.15866` | `0` |
+| `0` | `0.50000` | `0` | `0` |
+| `1` | `0.84134` | `0.84134` | `1` |
+| `2` | `0.97725` | `1.95450` | `2` |
 
-$$
-\operatorname{GELU}(x)=x\Phi(x)
-$$
+Notice that `-2` produces a result closer to zero than `-1`. The negative part of the curve is not simply a straight line with a small constant slope. On the positive side, the factor approaches one as inputs grow, so GELU gradually approaches the identity operation.
 
-At zero, the probability factor is one half, but multiplication by zero makes the output exactly zero. As `x` becomes strongly positive, the factor approaches one; as it becomes strongly negative, the factor approaches zero. These are continuous transitions instead of a hard threshold. PyTorch can differentiate the tensor operations, so gradients propagate through the activation without a custom backward function.
+```python
+# Example: Evaluate the exact GELU curve at five familiar points
+x = torch.tensor([[-2., -1., 0., 1., 2.]], requires_grad=True)
+y = my_gelu(x)
+expected = torch.tensor([[-0.0455003, -0.1586553, 0., 0.8413447, 1.9544997]])
+assert y.shape == (1, 5)
+assert torch.allclose(y, expected, atol=1e-6)
+y.sum().backward()
+assert torch.allclose(x.grad[0, 2], torch.tensor(0.5), atol=1e-6)
+assert torch.isfinite(x.grad).all()
+```
 
-## Pitfalls and reference scope
+The gradient at zero is `0.5`: very small input changes near zero produce roughly half as much output change. PyTorch differentiates the error-function expression automatically.
 
-Keep the original `x` in the final multiplication; returning only the CDF would be a different activation. The denominator is `sqrt(2)`, not `sqrt(2*pi)`. This reference uses the **exact error-function expression**, rather than GELU's common tanh approximation. The task's template requests the exact version even though the judge hint also mentions the approximation. Numerical behavior still depends on the input dtype and ordinary floating-point precision. The reference provides no approximation switch or in-place variant. The judge compares against default `F.gelu`, checks the zero value and shape preservation, and verifies gradient flow.
+## Common mistakes and reference scope
+
+Use the original `x` in the final multiplication. Removing it would return only a factor between zero and one. This is the exact error-function formulation of GELU; the frequently used formula involving `tanh` and a cubic term is an approximation and can differ slightly. The reference preserves tensor shape and remains differentiable, but expects a dtype and device supported by `torch.erf`.

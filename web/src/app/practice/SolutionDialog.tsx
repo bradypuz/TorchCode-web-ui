@@ -1,14 +1,15 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { Children, isValidElement, useEffect, useMemo, useRef, useState } from 'react';
 import Editor from '@monaco-editor/react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
-import { ArrowRight, BookOpen, Check, Code2, Copy, RefreshCw, Sparkles, X } from 'lucide-react';
+import { ArrowRight, BookOpen, Check, Code2, Copy, Maximize2, Minimize2, RefreshCw, Sparkles, X } from 'lucide-react';
 import s from './solution.module.css';
+import ExplanationVisual, { VISUAL_KINDS } from './ExplanationVisual';
 
 type Solution = {
   id: string;
@@ -28,8 +29,21 @@ export default function SolutionDialog({ taskId, user, onClose }: Props) {
   const [retry, setRetry] = useState(0);
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState('');
+  const [fullscreen, setFullscreen] = useState(false);
   const codeTabRef = useRef<HTMLButtonElement>(null);
   const explanationTabRef = useRef<HTMLButtonElement>(null);
+  // Stable renderer identities preserve example state during dashboard refreshes.
+  const markdownComponents = useMemo<Components>(() => ({
+    table: ({ children }) => <div className={s.tableWrap}><table>{children}</table></div>,
+    pre: ({ children }) => {
+      const child = Children.toArray(children)[0];
+      if (isValidElement<{ className?: string; children?: React.ReactNode }>(child) && child.props.className === 'language-torchcode-visual') {
+        const kind = String(child.props.children).trim();
+        if ((VISUAL_KINDS as readonly string[]).includes(kind)) return <ExplanationVisual kind={kind} taskId={taskId} />;
+      }
+      return <pre>{children}</pre>;
+    },
+  }), [taskId]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -74,9 +88,9 @@ export default function SolutionDialog({ taskId, user, onClose }: Props) {
 
   return <dialog
     ref={dialogRef}
-    className={s.dialog}
+    className={`${s.dialog} ${fullscreen ? s.fullscreen : ''}`}
     aria-labelledby="solution-title"
-    onCancel={event => { event.preventDefault(); onClose(); }}
+    onCancel={event => { event.preventDefault(); if (fullscreen) setFullscreen(false); else onClose(); }}
     onClick={event => {
       if (event.target !== event.currentTarget) return;
       const rect = event.currentTarget.getBoundingClientRect();
@@ -85,8 +99,11 @@ export default function SolutionDialog({ taskId, user, onClose }: Props) {
   >
     <header className={s.header}>
       <span className={s.headerIcon}><BookOpen size={23} /></span>
-      <div><span className={s.eyebrow}>A LITTLE GUIDANCE. A BIG AHA.</span><h2 id="solution-title">{solution?.title || 'Your solution guide'}</h2><p>{solution ? `${solution.difficulty} · Reference implementation & walkthrough` : 'Opening your reference notebook…'}</p></div>
-      <button onClick={onClose} className={s.closeButton} aria-label="Close solution"><X size={21} /></button>
+      <div className={s.headerContent}><span className={s.eyebrow}>A LITTLE GUIDANCE. A BIG AHA.</span><h2 id="solution-title">{solution?.title || 'Your solution guide'}</h2><p>{solution ? `${solution.difficulty} · Reference implementation & walkthrough` : 'Opening your reference notebook…'}</p></div>
+      <div className={s.headerActions}>
+        <button onClick={() => setFullscreen(value => !value)} className={s.fullscreenButton} aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'} aria-pressed={fullscreen} title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}>{fullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}<span>{fullscreen ? 'Exit fullscreen' : 'Fullscreen'}</span></button>
+        <button onClick={onClose} className={s.closeButton} aria-label="Close solution"><X size={21} /></button>
+      </div>
     </header>
 
     <div className={s.tabs} role="tablist" aria-label="Solution guide" onKeyDown={handleTabKeys}>
@@ -101,7 +118,11 @@ export default function SolutionDialog({ taskId, user, onClose }: Props) {
         <div className={s.editor}><Editor language="python" theme="vs-dark" value={solution.code} loading={<span className={s.editorLoading}>Loading code…</span>} options={{ readOnly: true, domReadOnly: true, minimap: { enabled: false }, automaticLayout: true, fontSize: 13, lineHeight: 23, scrollBeyondLastLine: false, padding: { top: 17, bottom: 17 }, renderLineHighlight: 'none', contextmenu: false, wordWrap: 'on', scrollbar: { verticalScrollbarSize: 7, horizontalScrollbarSize: 7 } }} /></div>
       </section>
       <section id="solution-explanation-panel" role="tabpanel" aria-labelledby="solution-explanation-tab" hidden={tab !== 'explanation'} className={s.explanationPanel} tabIndex={0}>
-        <div className={s.explanation}><ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{solution.explanation}</ReactMarkdown></div>
+        <div className={s.explanation}><ReactMarkdown
+          remarkPlugins={[remarkGfm, remarkMath]}
+          rehypePlugins={[rehypeKatex]}
+          components={markdownComponents}
+        >{solution.explanation}</ReactMarkdown></div>
       </section>
     </>}
 

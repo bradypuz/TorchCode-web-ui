@@ -24,31 +24,33 @@ from torch_judge.tasks import TASKS
 
 
 ROOT = Path(__file__).resolve().parent.parent
-# Preserve the README's Suggested Study Plan, including harder lessons before
-# later easy training lessons. Problems outside that plan follow its four weeks.
-CURRICULUM = [
-    "relu", "softmax", "cross_entropy", "dropout", "embedding", "gelu",
-    "linear", "layernorm", "batchnorm", "rmsnorm", "mlp", "conv2d",
-    "attention", "mha", "cross_attention", "causal_attention", "gqa",
-    "kv_cache", "sliding_window", "rope", "linear_attention", "flash_attention",
-    "gpt2_block", "lora", "moe", "vit_patch", "adam", "cosine_lr",
-    "gradient_clipping", "gradient_accumulation", "weight_init",
-    "topk_sampling", "beam_search", "speculative_decoding", "bpe",
-    "int8_quantization", "dpo_loss", "grpo_loss", "ppo_loss", "opd_loss",
-    "linear_regression",
+# Define each course explicitly, then preserve the README's weekly order for
+# recommendations, including harder lessons before later easy training lessons.
+STUDY_WEEKS = [
+    {"week": 1, "focus": "Foundations", "task_ids": [
+        "relu", "softmax", "cross_entropy", "dropout", "embedding", "gelu",
+        "linear", "linear_regression", "layernorm", "batchnorm", "rmsnorm", "mlp", "conv2d",
+    ]},
+    {"week": 2, "focus": "Attention Deep Dive", "task_ids": [
+        "attention", "mha", "cross_attention", "causal_attention", "gqa",
+        "kv_cache", "sliding_window", "rope", "linear_attention", "flash_attention",
+    ]},
+    {"week": 3, "focus": "Architecture + Training", "task_ids": [
+        "gpt2_block", "lora", "moe", "vit_patch", "adam", "cosine_lr",
+        "gradient_clipping", "gradient_accumulation", "weight_init",
+    ]},
+    {"week": 4, "focus": "Inference + Advanced", "task_ids": [
+        "topk_sampling", "beam_search", "speculative_decoding", "bpe",
+        "int8_quantization", "dpo_loss", "grpo_loss", "ppo_loss", "opd_loss",
+    ]},
 ]
+CURRICULUM = [task_id for week in STUDY_WEEKS for task_id in week["task_ids"]]
 ATTENTION = {"attention", "mha", "cross_attention", "causal_attention", "gqa",
              "kv_cache", "sliding_window", "rope", "linear_attention", "flash_attention"}
 TRAINING = {"adam", "cosine_lr", "gradient_clipping", "gradient_accumulation", "weight_init"}
 ARCHITECTURE = {"gpt2_block", "lora", "moe", "vit_patch"}
 INFERENCE = {"topk_sampling", "beam_search", "speculative_decoding", "int8_quantization", "bpe"}
 INTERVALS = (2, 4, 7, 14, 30)
-STUDY_WEEKS = [
-    {"week": 1, "focus": "Foundations", "task_ids": CURRICULUM[:12]},
-    {"week": 2, "focus": "Attention Deep Dive", "task_ids": CURRICULUM[12:22]},
-    {"week": 3, "focus": "Architecture + Training", "task_ids": CURRICULUM[22:31]},
-    {"week": 4, "focus": "Inference + Advanced", "task_ids": CURRICULUM[31:40]},
-]
 
 
 def study_for(task_id: str) -> dict[str, Any]:
@@ -103,9 +105,11 @@ class PracticeStore:
                     user_id TEXT NOT NULL REFERENCES profiles(id), task_id TEXT NOT NULL,
                     success INTEGER NOT NULL, passed INTEGER NOT NULL, total INTEGER NOT NULL,
                     hint_used INTEGER NOT NULL, failed_tests TEXT NOT NULL,
-                    created_at TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'web'
+                    created_at TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'web',
+                    submitted_code TEXT
                 );
                 CREATE INDEX IF NOT EXISTS attempts_user_date ON attempts(user_id, created_at);
+                CREATE INDEX IF NOT EXISTS attempts_user_task_id ON attempts(user_id, task_id, id DESC);
                 CREATE TABLE IF NOT EXISTS progress (
                     user_id TEXT NOT NULL REFERENCES profiles(id), task_id TEXT NOT NULL,
                     solved INTEGER NOT NULL DEFAULT 0, needs_review INTEGER NOT NULL DEFAULT 0,
@@ -122,6 +126,11 @@ class PracticeStore:
             """)
             connection.execute("INSERT OR IGNORE INTO profiles VALUES (?, ?, ?)",
                                ("local", "You", timestamp(utc_now())))
+            # Existing attempts have metadata only; NULL means their code was
+            # never saved. In particular, an empty submitted string is not NULL.
+            attempt_columns = {row["name"] for row in connection.execute("PRAGMA table_info(attempts)")}
+            if "submitted_code" not in attempt_columns:
+                connection.execute("ALTER TABLE attempts ADD COLUMN submitted_code TEXT")
             # Preserve existing local databases when review scheduling improves.
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(progress)")}
             for column, kind in (("review_anchor_at", "TEXT"), ("review_due_days", "INTEGER"),
@@ -220,7 +229,8 @@ class PracticeStore:
         return {"imported": imported, "ignored": len(task_ids) - imported}
 
     def record_attempt(self, user_id: str, task_id: str, result: dict[str, Any],
-                       hint_used: bool = False, at: datetime | None = None) -> None:
+                       hint_used: bool = False, at: datetime | None = None,
+                       *, code: str | None = None) -> None:
         self.profile(user_id)
         if task_id not in TASKS:
             raise HTTPException(status_code=404, detail="Task not found")
@@ -238,10 +248,10 @@ class PracticeStore:
             """, (user_id, task_id, last_success)).fetchone()["count"]
             connection.execute("""
                 INSERT INTO attempts
-                (user_id, task_id, success, passed, total, hint_used, failed_tests, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (user_id, task_id, success, passed, total, hint_used, failed_tests, created_at, submitted_code)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (user_id, task_id, int(success), int(result.get("passed", 0)),
-                  int(result.get("total", 0)), int(hint_used), json.dumps(failed), timestamp(at)))
+                  int(result.get("total", 0)), int(hint_used), json.dumps(failed), timestamp(at), code))
             connection.execute("INSERT OR IGNORE INTO progress (user_id, task_id) VALUES (?, ?)",
                                (user_id, task_id))
             old = connection.execute("SELECT * FROM progress WHERE user_id = ? AND task_id = ?",
@@ -257,6 +267,58 @@ class PracticeStore:
                 WHERE user_id = ? AND task_id = ?
             """, (int(old["solved"] or success), int(not success or hint_used or struggled),
                   clean_passes, timestamp(due), timestamp(at), delay, reason, user_id, task_id))
+
+    def _validate_submission_scope(self, user_id: str, task_id: str) -> None:
+        self.profile(user_id)
+        if task_id not in TASKS:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+    @staticmethod
+    def _submission_metadata(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"], "task_id": row["task_id"],
+            "success": bool(row["success"]), "passed": row["passed"], "total": row["total"],
+            "created_at": row["created_at"], "hint_used": bool(row["hint_used"]),
+            "has_code": bool(row["has_code"]),
+        }
+
+    def submissions(self, user_id: str, task_id: str, limit: int = 20,
+                    before_id: int | None = None) -> dict[str, Any]:
+        self._validate_submission_scope(user_id, task_id)
+        if not 1 <= limit <= 100:
+            raise HTTPException(status_code=422, detail="Choose between 1 and 100 submissions")
+        if before_id is not None and before_id <= 0:
+            raise HTTPException(status_code=422, detail="Submission cursor must be positive")
+        query = """
+            SELECT id, task_id, success, passed, total, created_at, hint_used,
+                   submitted_code IS NOT NULL AS has_code
+            FROM attempts WHERE user_id = ? AND task_id = ?
+        """
+        parameters: list[Any] = [user_id, task_id]
+        if before_id is not None:
+            query += " AND id < ?"
+            parameters.append(before_id)
+        query += " ORDER BY id DESC LIMIT ?"
+        parameters.append(limit + 1)
+        with self.connection() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        submissions = [self._submission_metadata(row) for row in rows[:limit]]
+        return {
+            "submissions": submissions,
+            "next_before_id": submissions[-1]["id"] if len(rows) > limit else None,
+        }
+
+    def submission(self, submission_id: int, user_id: str, task_id: str) -> dict[str, Any]:
+        self._validate_submission_scope(user_id, task_id)
+        with self.connection() as connection:
+            row = connection.execute("""
+                SELECT id, task_id, success, passed, total, created_at, hint_used,
+                       submitted_code IS NOT NULL AS has_code, submitted_code
+                FROM attempts WHERE id = ? AND user_id = ? AND task_id = ?
+            """, (submission_id, user_id, task_id)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Submission not found")
+        return {**self._submission_metadata(row), "code": row["submitted_code"]}
 
     def mark_review(self, user_id: str, task_id: str, needs_review: bool) -> dict[str, bool]:
         self.profile(user_id)
@@ -292,15 +354,20 @@ class PracticeStore:
             raise HTTPException(status_code=422, detail="Use YYYY-MM-DD for the day")
         with self.connection() as connection:
             attempts = [dict(row) for row in connection.execute(
-                "SELECT * FROM attempts WHERE user_id = ? ORDER BY created_at, id", (user_id,))]
+                """SELECT id, user_id, task_id, success, passed, total, hint_used,
+                          failed_tests, created_at, source
+                   FROM attempts WHERE user_id = ? ORDER BY created_at, id""", (user_id,))]
             states = {row["task_id"]: dict(row) for row in connection.execute(
                 "SELECT * FROM progress WHERE user_id = ?", (user_id,)) if row["task_id"] in TASKS}
 
             by_task: dict[str, list[dict[str, Any]]] = {}
+            web_by_task: dict[str, list[dict[str, Any]]] = {}
             latest_today: dict[str, dict[str, Any]] = {}
             day_counts: dict[date, int] = {}
             for attempt in attempts:
                 by_task.setdefault(attempt["task_id"], []).append(attempt)
+                if attempt["source"] == "web":
+                    web_by_task.setdefault(attempt["task_id"], []).append(attempt)
                 attempt_day = parse_timestamp(attempt["created_at"]).astimezone(zone).date()
                 day_counts[attempt_day] = day_counts.get(attempt_day, 0) + 1
                 if attempt_day == today:
@@ -401,18 +468,29 @@ class PracticeStore:
             streak += 1
             streak_day -= timedelta(days=1)
         monday = today - timedelta(days=today.weekday())
-        history = []
-        for attempt in reversed(attempts[-100:]):
-            task = TASKS.get(attempt["task_id"])
-            if task is None:
-                continue
-            history.append({
+        def history_entry(attempt: dict[str, Any]) -> dict[str, Any]:
+            task = TASKS[attempt["task_id"]]
+            return {
                 "id": attempt["id"], "task_id": attempt["task_id"], "title": task["title"],
                 "difficulty": task.get("difficulty", "Unknown"), "success": bool(attempt["success"]),
                 "passed": attempt["passed"], "total": attempt["total"],
                 "created_at": attempt["created_at"], "hint_used": bool(attempt["hint_used"]),
-                "failed_tests": json.loads(attempt["failed_tests"]), "source": attempt["source"],
-            })
+                "failed_tests": json.loads(attempt["failed_tests"]),
+            }
+
+        history = [{**history_entry(attempt), "source": attempt["source"]}
+                   for attempt in reversed(attempts[-100:]) if attempt["task_id"] in TASKS]
+        # Summarize the complete submission log, independently of history's
+        # latest-100 window. Undated imported progress is never a submission.
+        latest_web = sorted((entries[-1] for task_id, entries in web_by_task.items()
+                             if task_id in TASKS),
+                            key=lambda attempt: (attempt["created_at"], attempt["id"]), reverse=True)
+        problem_history = [{
+            **history_entry(attempt),
+            "attempts": len(web_by_task[attempt["task_id"]]),
+            "solved": bool(states.get(attempt["task_id"], {}).get("solved")),
+            "needs_review": bool(states.get(attempt["task_id"], {}).get("needs_review")),
+        } for attempt in latest_web]
         return {
             "profile": profile, "day": today.isoformat(), "timezone": timezone,
             "goal": {"target": count, "completed": sum(entry["completed"] for entry in plan)},
@@ -426,7 +504,7 @@ class PracticeStore:
                       "label": (monday + timedelta(days=index)).strftime("%a"),
                       "count": day_counts.get(monday + timedelta(days=index), 0),
                       "is_today": monday + timedelta(days=index) == today} for index in range(7)],
-            "plan": plan, "reviews": reviews, "history": history,
+            "plan": plan, "reviews": reviews, "history": history, "problem_history": problem_history,
             "progress": [{"id": task_id,
                           **study_for(task_id),
                           "status": "solved" if states.get(task_id, {}).get("solved") else
@@ -480,6 +558,18 @@ def create_profile(request: ProfileRequest):
 def dashboard(user_id: str = "local", count: int = Query(default=3, ge=1, le=10),
               day: str | None = None, timezone: str = "America/Los_Angeles"):
     return get_store().dashboard(user_id=user_id, count=count, day=day, timezone=timezone)
+
+
+@router.get("/submissions")
+def list_submissions(task_id: str, user_id: str = "local",
+                     limit: int = Query(default=20, ge=1, le=100),
+                     before_id: int | None = Query(default=None, gt=0)):
+    return get_store().submissions(user_id, task_id, limit=limit, before_id=before_id)
+
+
+@router.get("/submissions/{submission_id}")
+def get_submission(submission_id: int, task_id: str, user_id: str = "local"):
+    return get_store().submission(submission_id, user_id, task_id)
 
 
 @router.post("/import")

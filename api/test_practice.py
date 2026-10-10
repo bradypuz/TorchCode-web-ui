@@ -36,6 +36,7 @@ class PracticeStoreTests(unittest.TestCase):
         self.assertEqual([entry["id"] for entry in dashboard["plan"]], ["relu", "softmax", "cross_entropy"])
         self.assertEqual(dashboard["goal"], {"target": 3, "completed": 0})
         self.assertEqual(dashboard["history"], [])
+        self.assertEqual(dashboard["problem_history"], [])
         self.assertEqual(dashboard["stats"]["xp"], 0)
         self.assertEqual(dashboard["stats"]["streak"], 0)
         self.assertEqual(len(dashboard["week"]), 7)
@@ -65,7 +66,7 @@ class PracticeStoreTests(unittest.TestCase):
         self.assertEqual(self.dashboard()["goal"]["completed"], 1)
 
     def test_new_lessons_follow_readme_week_order_including_difficulty_changes(self):
-        self.store.import_solved("local", CURRICULUM[:20])
+        self.store.import_solved("local", CURRICULUM[:21])
         # Ignore undated imported markers in the due list by using a date before
         # their import time; this test checks new-lesson curriculum selection.
         plan = self.store.dashboard(day="2000-01-01", count=10)["plan"]
@@ -78,13 +79,113 @@ class PracticeStoreTests(unittest.TestCase):
         self.assertEqual(plan[3]["id"], "lora")
         self.assertEqual(plan[2]["study_week"], 3)
         self.assertIn("Week 3", plan[2]["reason"])
-        self.assertEqual(STUDY_WEEKS[3]["task_ids"], CURRICULUM[31:40])
+        self.assertEqual(STUDY_WEEKS[3]["task_ids"], CURRICULUM[32:41])
 
-    def test_curriculum_has_all_real_tasks_and_one_extra_after_four_weeks(self):
+    def test_curriculum_has_all_41_real_tasks_once_across_four_weeks(self):
+        flattened = [task_id for week in STUDY_WEEKS for task_id in week["task_ids"]]
+        self.assertEqual(CURRICULUM, flattened)
+        self.assertEqual(len(CURRICULUM), 41)
         self.assertEqual(len(CURRICULUM), len(set(CURRICULUM)))
         self.assertEqual(set(CURRICULUM), set(TASKS))
-        self.assertEqual(sum(len(week["task_ids"]) for week in STUDY_WEEKS), 40)
-        self.assertEqual(CURRICULUM[40:], ["linear_regression"])
+        self.assertEqual([week["week"] for week in STUDY_WEEKS], [1, 2, 3, 4])
+        self.assertEqual([week["total"] for week in self.dashboard()["curriculum"]], [13, 10, 9, 9])
+        self.assertTrue(all(entry["study_week"] in (1, 2, 3, 4)
+                            for entry in self.dashboard()["progress"]))
+
+    def test_study_weeks_match_the_readme_plan(self):
+        names = {
+            "ReLU": "relu", "Softmax": "softmax", "CE Loss": "cross_entropy",
+            "Dropout": "dropout", "Embedding": "embedding", "GELU": "gelu",
+            "Linear": "linear", "Linear Regression": "linear_regression",
+            "LayerNorm": "layernorm", "BatchNorm": "batchnorm", "RMSNorm": "rmsnorm",
+            "SwiGLU MLP": "mlp", "Conv2d": "conv2d", "SDPA": "attention", "MHA": "mha",
+            "Cross-Attn": "cross_attention", "Causal": "causal_attention", "GQA": "gqa",
+            "KV Cache": "kv_cache", "Sliding Window": "sliding_window", "RoPE": "rope",
+            "Linear Attn": "linear_attention", "Flash Attn": "flash_attention",
+            "GPT-2 Block": "gpt2_block", "LoRA": "lora", "MoE": "moe", "ViT Patch": "vit_patch",
+            "Adam": "adam", "Cosine LR": "cosine_lr", "Grad Clip": "gradient_clipping",
+            "Grad Accumulation": "gradient_accumulation", "Kaiming Init": "weight_init",
+            "Top-k/p Sampling": "topk_sampling", "Beam Search": "beam_search",
+            "Speculative Decoding": "speculative_decoding", "BPE": "bpe",
+            "INT8 Quant": "int8_quantization", "DPO Loss": "dpo_loss", "GRPO Loss": "grpo_loss",
+            "PPO Loss": "ppo_loss", "OPD Loss": "opd_loss",
+        }
+        readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
+        section = readme.split("## 📅 Suggested Study Plan", 1)[1].split("\n---", 1)[0]
+        rows = [line for line in section.splitlines() if line.startswith("| **")]
+        self.assertEqual(len(rows), 4)
+        for week, row in zip(STUDY_WEEKS, rows):
+            cells = [cell.strip() for cell in row.strip("|").split("|")]
+            with self.subTest(week=week["week"]):
+                self.assertEqual(int(cells[0].replace("*", "")), week["week"])
+                self.assertEqual(cells[1].split(" ", 1)[1], week["focus"])
+                lessons = cells[2].removesuffix(" + speed run").split(" → ")
+                self.assertEqual([names[lesson] for lesson in lessons], week["task_ids"])
+
+    def test_linear_regression_is_recommended_immediately_after_linear(self):
+        self.store.import_solved("local", CURRICULUM[:7])
+        plan = self.store.dashboard(day="2000-01-01")["plan"]
+        self.assertEqual([entry["id"] for entry in plan], ["linear_regression", "layernorm", "batchnorm"])
+        self.assertEqual(plan[0]["study_week"], 1)
+        self.assertEqual(plan[0]["study_focus"], "Foundations")
+        self.assertIn("Week 1", plan[0]["reason"])
+
+    def test_problem_history_reports_latest_result_and_ever_solved_state(self):
+        source = "# private journey source\nreturn x"
+        self.store.record_attempt("local", "relu", SUCCESS, at=NOW, code=source)
+        self.store.record_attempt("local", "relu", FAILURE, hint_used=True,
+                                  at=NOW + timedelta(minutes=1), code=source)
+        self.store.import_solved("local", ["softmax"])
+        self.store.mark_review("local", "embedding", True)
+        dashboard = self.dashboard()
+        latest = {key: value for key, value in dashboard["history"][0].items() if key != "source"}
+        self.assertEqual(dashboard["problem_history"], [{
+            **latest, "attempts": 2, "solved": True, "needs_review": True,
+        }])
+        summary = dashboard["problem_history"][0]
+        self.assertFalse(summary["success"])
+        self.assertEqual(summary["failed_tests"], ["gradient"])
+        self.assertTrue(summary["hint_used"])
+        self.assertNotIn("private journey source", json.dumps(dashboard))
+        self.assertNotIn("submitted_code", json.dumps(dashboard))
+        self.assertNotIn('"code"', json.dumps(dashboard))
+
+    def test_problem_history_groups_the_full_log_and_orders_by_latest_time_then_id(self):
+        self.store.record_attempt("local", "dropout", SUCCESS, at=NOW - timedelta(days=3))
+        for index in range(105):
+            self.store.record_attempt("local", "relu", FAILURE, at=NOW + timedelta(minutes=index))
+        # A timestamp tie puts the greater ID first.
+        self.store.record_attempt("local", "softmax", SUCCESS, at=NOW + timedelta(minutes=104))
+        self.store.record_attempt("local", "gelu", SUCCESS, at=NOW + timedelta(days=2))
+        # A later insertion with an older timestamp does not become the latest result.
+        self.store.record_attempt("local", "gelu", FAILURE, at=NOW - timedelta(days=2))
+        dashboard = self.dashboard()
+        self.assertEqual(len(dashboard["history"]), 100)
+        self.assertNotIn("dropout", [entry["task_id"] for entry in dashboard["history"]])
+        summaries = dashboard["problem_history"]
+        self.assertEqual([entry["task_id"] for entry in summaries], ["gelu", "softmax", "relu", "dropout"])
+        self.assertEqual([entry["attempts"] for entry in summaries], [2, 1, 105, 1])
+        self.assertTrue(summaries[0]["success"])
+        self.assertEqual(summaries[0]["created_at"], (NOW + timedelta(days=2)).isoformat())
+        self.assertEqual(sum(entry["attempts"] for entry in summaries), 109)
+        self.assertEqual(dashboard["stats"]["attempts"], 109)
+        with self.store.connection() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM attempts").fetchone()[0], 109)
+
+    def test_problem_history_counts_only_web_submissions(self):
+        self.store.record_attempt("local", "relu", SUCCESS, at=NOW)
+        self.store.record_attempt("local", "relu", FAILURE, at=NOW + timedelta(minutes=1))
+        self.store.record_attempt("local", "softmax", SUCCESS, at=NOW + timedelta(minutes=2))
+        with self.store.connection() as connection:
+            connection.execute("UPDATE attempts SET source = 'notebook' WHERE id > 1")
+        dashboard = self.dashboard()
+        self.assertEqual(len(dashboard["history"]), 3)
+        self.assertEqual(len(dashboard["problem_history"]), 1)
+        summary = dashboard["problem_history"][0]
+        self.assertEqual(summary["task_id"], "relu")
+        self.assertEqual(summary["attempts"], 1)
+        self.assertTrue(summary["success"])
+        self.assertEqual(summary["created_at"], NOW.isoformat())
 
     def test_failed_reattempt_removes_today_completion_and_keeps_ever_solved(self):
         self.dashboard()
@@ -144,8 +245,21 @@ class PracticeStoreTests(unittest.TestCase):
         self.store.record_attempt(other["id"], "relu", FAILURE, at=NOW)
         self.store.mark_review(other["id"], "embedding", True)
         self.assertEqual(self.dashboard()["history"], [])
+        self.assertEqual(self.dashboard()["problem_history"], [])
         dashboard = self.dashboard(user_id=other["id"])
         self.assertEqual(len(dashboard["history"]), 1)
+        self.assertEqual(len(dashboard["problem_history"]), 1)
+        self.assertEqual(dashboard["problem_history"][0]["attempts"], 1)
+        self.assertFalse(dashboard["problem_history"][0]["solved"])
+        self.store.record_attempt("local", "relu", SUCCESS, at=NOW)
+        local = self.dashboard()["problem_history"][0]
+        other_summary = self.dashboard(user_id=other["id"])["problem_history"][0]
+        self.assertEqual(local["attempts"], 1)
+        self.assertTrue(local["solved"])
+        self.assertFalse(local["needs_review"])
+        self.assertEqual(other_summary["attempts"], 1)
+        self.assertFalse(other_summary["success"])
+        self.assertTrue(other_summary["needs_review"])
         self.assertEqual(dashboard["profile"], other)
         self.assertEqual(len(self.store.profiles()), 2)
 
@@ -172,6 +286,7 @@ class PracticeStoreTests(unittest.TestCase):
         dashboard = self.dashboard()
         self.assertEqual(dashboard["stats"]["solved"], 1)
         self.assertEqual(dashboard["history"], [])
+        self.assertEqual(dashboard["problem_history"], [])
         self.assertEqual(dashboard["stats"]["streak"], 0)
         self.assertEqual(dashboard["stats"]["xp"], 0)
 
@@ -191,9 +306,14 @@ class PracticeStoreTests(unittest.TestCase):
         self.assertEqual(dashboard["stats"]["solved"], 1)
         self.assertEqual(dashboard["stats"]["attempts"], 5)
         self.assertEqual(dashboard["history"], [])
+        self.assertEqual(dashboard["problem_history"], [])
         store.record_attempt("local", "softmax", SUCCESS, at=NOW)
         reopened = PracticeStore(self.path / "practice.db", legacy)
-        self.assertEqual(reopened.dashboard(day="2026-10-10")["stats"]["solved"], 2)
+        dashboard = reopened.dashboard(day="2026-10-10")
+        self.assertEqual(dashboard["stats"]["solved"], 2)
+        self.assertEqual(len(dashboard["problem_history"]), 1)
+        self.assertEqual(dashboard["problem_history"][0]["task_id"], "softmax")
+        self.assertEqual(dashboard["problem_history"][0]["attempts"], 1)
 
     def test_manual_review_has_no_fabricated_submission(self):
         self.store.mark_review("local", "embedding", True)

@@ -1,37 +1,73 @@
-# Gradient Norm Clipping
+# Gradient norm clipping
 
-## Goal and intuition
+## What the function does
 
-Limit the size of an entire gradient update without changing its direction. Imagine all parameter gradients concatenated into one long vector. If that vector is too long, multiply every component by the same factor. This differs from independently clipping each element or clipping each parameter tensor to its own norm limit.
+After backpropagation, limit the combined size of a model's gradients before the optimizer uses them. The function scales all participating gradients by the same factor. This preserves their relative directions while preventing one step from using an excessively large gradient vector.
 
-## Inputs and outputs
+`parameters` is an iterable of parameter tensors, usually `model.parameters()`. Each parameter may have a `.grad` tensor of the same shape or `.grad = None`. `max_norm` is the allowed combined Euclidean norm: square every gradient entry, add the squares, and take the square root. The function changes `.grad` tensors in place and returns a Python float containing the **original** norm.
 
-- `parameters`: an iterable of tensors or model parameters, after backpropagation has populated their `.grad` fields.
-- `max_norm`: the desired global L2 norm bound, normally nonnegative.
-- Return value: a Python float containing the **original**, unclipped global norm.
+## Keep only parameters with gradients
 
-Parameter values are unchanged. Existing gradients are modified in place, so the function is normally used between `loss.backward()` and `optimizer.step()`.
+```python
+parameters = [p for p in parameters if p.grad is not None]
+```
 
-## Walk through the reference
+Some parameters may be unused in a particular forward pass, or frozen, and therefore lack a gradient. Skipping them prevents attempts to call methods on `None`. Making a list also lets the function traverse the same parameters twice; an incoming generator could otherwise be exhausted after the norm calculation.
 
-1. Convert the iterable to a list containing only parameters whose `.grad` is not `None`.
-2. Compute each gradient tensor's L2 norm, square those norms, add them, and take the square root.
-3. Compute `clip_coef = max_norm / (total_norm + 1e-6)`. The small denominator offset prevents division by zero when populated gradients are all zero.
-4. If the coefficient is less than one, multiply every gradient by it in place. Otherwise leave the gradients untouched.
-5. Return `total_norm.item()` from before the mutation.
+## Treat every gradient as one large vector
 
-## Why it works
+```python
+total_norm = torch.sqrt(sum(p.grad.norm() ** 2 for p in parameters))
+```
 
-$$
-G=\sqrt{\sum_p\|g_p\|_2^2},\qquad g'_p=cg_p
-$$
+`p.grad.norm()` gives the Euclidean norm of one parameter's gradient. Squaring that norm gives the sum of squared entries for that parameter. Adding these squared norms and taking the square root is equivalent to concatenating all gradient entries into one long vector and measuring its norm.
 
-$$
-c=\min\left(1,\frac{\mathrm{max\_norm}}{G+10^{-6}}\right)
-$$
+For two gradient tensors `[3, 4]` and `[12]`, their individual norms are `5` and `12`. The combined norm is `sqrt(5**2 + 12**2) = 13`. Adding the individual norms would incorrectly give `17`.
 
-All gradients share the same scaling factor. Thus their relative proportions and the direction of the combined vector are preserved. When clipping occurs, the resulting norm is slightly below the requested bound because of the epsilon.
+## Calculate one scale and apply it only when needed
 
-## Pitfalls and reference scope
+```python
+clip_coef = max_norm / (total_norm + 1e-6)
+if clip_coef < 1:
+    for p in parameters:
+        p.grad.mul_(clip_coef)
+return total_norm.item()
+```
 
-Do not return the clipped norm, and do not scale gradients upward when they are already small. The reference has an **empty-list edge case**: if no parameter has a gradient, Python's `sum` returns integer zero and `torch.sqrt` raises a type error. The epsilon does not fix that case. It does not validate negative bounds, handle nonfinite gradients explicitly, or combine gradients across different devices. It computes only L2 clipping, with no configurable norm order. The judge exercises clipping, original-norm return, small-gradient identity, and direction preservation.
+If the norm is `13` and the requested limit is `6.5`, the coefficient is approximately `0.5`. Every gradient is multiplied by that coefficient, bringing the combined norm just below `6.5`. The small `1e-6` protects division when the norm is zero and means the result is slightly below the exact boundary.
+
+When the norm is already below the limit, the coefficient exceeds one. The `if` prevents increasing those already-small gradients. `.mul_()` changes the existing gradient tensor, so the optimizer later reads the clipped values. `.item()` converts the original scalar norm tensor to a Python number; it does not recompute the norm after scaling.
+
+## Follow a complete example
+
+| Gradient tensor | Before clipping | After clipping to approximately half |
+|---|---|---|
+| First parameter | `[3, 4]` | `[1.5, 2]` |
+| Second parameter | `[12]` | `[6]` |
+| Combined norm | `13` | approximately `6.5` |
+
+```python
+# Example: Clip a 3-4-12 gradient vector with one shared scale
+first = torch.nn.Parameter(torch.zeros(2))
+second = torch.nn.Parameter(torch.zeros(1))
+unused = torch.nn.Parameter(torch.zeros(1))
+first.grad = torch.tensor([3., 4.])
+second.grad = torch.tensor([12.])
+original_norm = clip_grad_norm([first, second, unused], max_norm=6.5)
+scale = 6.5 / (13 + 1e-6)
+assert original_norm == 13.0
+assert torch.allclose(first.grad, torch.tensor([3., 4.]) * scale)
+assert torch.allclose(second.grad, torch.tensor([12.]) * scale)
+combined = torch.sqrt(first.grad.square().sum() + second.grad.square().sum())
+assert abs(combined.item() - 6.5) < 1e-5
+assert unused.grad is None
+before = first.grad.clone()
+clip_grad_norm([first, second], max_norm=20)
+assert torch.equal(first.grad, before)
+```
+
+The second call demonstrates the below-limit case: it returns the current norm but leaves the gradients unchanged. In a training loop, the intended order is `loss.backward()`, then clipping, then `optimizer.step()`.
+
+## Common mistakes and reference scope
+
+Clip gradients, not parameter values. Do not normalize each tensor separately; that changes their relative sizes. This reference assumes a nonempty list of dense gradients on compatible devices. If every `.grad` is `None`, Python's empty sum becomes an integer and `torch.sqrt` fails. It has no nonfinite-gradient handling and expects a nonnegative norm limit.

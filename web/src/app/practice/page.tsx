@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowRight, BookOpen, Check, ChevronDown, CircleCheck, Clock3, Code2, Flame, History, LayoutGrid, Leaf, Minus, Plus, RefreshCw, Search, Sparkles, Target, Trophy, Users, X, Zap } from 'lucide-react';
 import s from './practice.module.css';
 import SolutionDialog from './SolutionDialog';
+import JourneyMap from './JourneyMap';
+import ProblemHistory, { type HistoryProblem } from './ProblemHistory';
 
 const API = 'http://localhost:8000/api';
 type Profile = { id: string; name: string };
@@ -14,7 +16,7 @@ type Dashboard = {
   profile: Profile; goal: { target: number; completed: number };
   stats: { solved: number; total: number; streak: number; attempts: number; xp: number; today_completed: number };
   week: { day: string; label: string; count: number; is_today: boolean }[];
-  plan: Problem[]; reviews: Problem[]; history: Attempt[]; progress: Progress[];
+  plan: Problem[]; reviews: Problem[]; history: Attempt[]; problem_history: HistoryProblem[]; progress: Progress[];
   curriculum: { week: number; focus: string; task_ids: string[]; solved: number; total: number }[];
 };
 type Task = { id: string; title: string; difficulty: string };
@@ -156,7 +158,7 @@ export default function PracticePage() {
   const progress = new Map(data?.progress.map(item => [item.id, item]));
   const firstTask = data?.plan.find(item => !item.completed);
   const percent = data ? Math.min(100, Math.round(data.goal.completed / Math.max(1, data.goal.target) * 100)) : 0;
-  const visibleHistory = (data?.history || []).filter(item => (filter === 'all' || (filter === 'solved' ? item.success : !item.success)) && item.title.toLowerCase().includes(query.toLowerCase()));
+  const visibleHistory = (data?.problem_history || []).filter(item => (filter === 'all' || (filter === 'solved' ? item.solved : !item.solved || item.needs_review)) && item.title.toLowerCase().includes(query.toLowerCase()));
   const visibleTasks = tasks.filter(item => (filter === 'all' || item.difficulty.toLowerCase() === filter) && item.title.toLowerCase().includes(query.toLowerCase()));
   const nav = [{ id: 'today' as const, label: 'Today’s practice', icon: LayoutGrid }, { id: 'review' as const, label: 'Review lab', icon: RefreshCw }, { id: 'history' as const, label: 'Your journey', icon: History }, { id: 'library' as const, label: 'Problem library', icon: BookOpen }];
 
@@ -170,19 +172,12 @@ export default function PracticePage() {
   </section>;
 
   const historySection = <section className={s.historySection}>
-    <div className={s.sectionHeading}><div><span className={s.eyebrow}>EVERY TRY IS A STEP FORWARD</span><h2>Your journey</h2><p>Real attempts. Real progress. All yours.</p></div>{section === 'today' && <button className={s.textButton} onClick={() => navigate('history')}>View all <ArrowRight size={16} /></button>}</div>
-    {section === 'history' && <div className={s.filters}><div className={s.filterTabs}>{['all', 'solved', 'working'].map(value => <button key={value} className={filter === value ? s.selectedFilter : ''} onClick={() => setFilter(value)}>{value === 'all' ? 'All attempts' : value === 'solved' ? 'Solved' : 'Still growing'}</button>)}</div><label className={s.search}><Search size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Find a problem…" aria-label="Search history" /></label></div>}
-    {data?.history.length ? <div className={s.historyTable}>
-      <div className={s.tableHeader}><span>PROBLEM</span><span>RESULT</span><span>WHEN</span><span>KEEP GOING</span></div>
-      {(section === 'today' ? visibleHistory.slice(0, 5) : visibleHistory).map(item => <div className={s.historyRow} key={item.id}>
-        <div className={s.historyProblem}><div className={item.success ? s.solvedGlyph : s.attemptGlyph}>{item.success ? <Check size={18} /> : <Code2 size={18} />}</div><div><h3>{item.title}</h3><span>{item.difficulty}{item.hint_used ? ' · Hint used' : ''}</span></div></div>
-        <div><span className={item.success ? s.solvedBadge : s.workingBadge}>{item.success ? 'Solved' : 'Keep at it'}</span><small>{item.passed}/{item.total} tests passed</small>{item.failed_tests?.length > 0 && <small className={s.failedTest} title={item.failed_tests.join(', ')}>{item.failed_tests[0]}</small>}</div>
-        <div className={s.attemptDate}>{new Date(item.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}<small>{new Date(item.created_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</small></div>
-        <div className={s.historyActions}><PracticeLink id={item.task_id} user={user} onSolution={setSolutionId} quiet>Practice</PracticeLink><button disabled={busyReview === item.task_id} className={s.reviewToggle} onClick={() => flagReview(item.task_id, !progress.get(item.task_id)?.needs_review)}>{progress.get(item.task_id)?.needs_review ? <><Check size={12} /> In review</> : <><Plus size={12} /> Review later</>}</button></div>
-      </div>)}
-      {!visibleHistory.length && <p className={s.noResults}>No attempts match your search.</p>}
-      {section === 'history' && <p className={s.historyNote}>Showing your latest 100 attempts. Older attempts still count toward your progress.</p>}
-    </div> : <div className={s.historyEmpty}><div className={s.emptyIcon}><History size={26} /></div><h3>Your story starts with one try.</h3><p>Run tests in the editor and your results will appear here.<br />Every attempt counts, even the messy ones.</p>{data?.plan[0] && <PracticeLink id={data.plan[0].id} user={user} onSolution={setSolutionId}>Make your first move</PracticeLink>}<span className={s.historyNote}>Previously solved problems are imported when you open the editor. Old attempt times weren’t recorded.</span></div>}
+    <div className={s.sectionHeading}><div><span className={s.eyebrow}>EVERY TRY IS A STEP FORWARD</span><h2>{section === 'today' ? 'Your recent practice' : 'Practice history'}</h2><p>One problem, all your attempts. Expand a problem to see each submission.</p></div>{section === 'today' && <button className={s.textButton} onClick={() => navigate('history')}>Your journey <ArrowRight size={16} /></button>}</div>
+    {section === 'history' && <div className={s.filters}><div className={s.filterTabs}>{['all', 'solved', 'working'].map(value => <button key={value} className={filter === value ? s.selectedFilter : ''} onClick={() => setFilter(value)}>{value === 'all' ? 'All problems' : value === 'solved' ? 'Solved' : 'Still growing'}</button>)}</div><label className={s.search}><Search size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Find a problem…" aria-label="Search history" /></label></div>}
+    {data?.problem_history?.length ? <>
+      <ProblemHistory items={section === 'today' ? visibleHistory.slice(0, 5) : visibleHistory} user={user} busyReview={busyReview} onSolution={setSolutionId} onReview={(id, needsReview) => void flagReview(id, needsReview)} />
+      {!visibleHistory.length && <p className={s.noResults}>No problems match your search.</p>}
+    </> : <div className={s.historyEmpty}><div className={s.emptyIcon}><History size={26} /></div><h3>Your story starts with one try.</h3><p>Run tests in the editor and your results will appear here.<br />Every attempt counts, even the messy ones.</p>{data?.plan[0] && <PracticeLink id={data.plan[0].id} user={user} onSolution={setSolutionId}>Make your first move</PracticeLink>}<span className={s.historyNote}>Previously solved problems appear on your map. Their old attempt times weren’t recorded.</span></div>}
   </section>;
 
   return <div className={s.app}>
@@ -220,7 +215,7 @@ export default function PracticePage() {
             {reviewSection}{historySection}
           </>}
           {section === 'review' && <><div className={s.pageHeading}><div className={s.pageHeadingIcon}><RefreshCw size={28} /></div><span className={s.eyebrow}>THE COMEBACK IS PART OF THE CLIMB</span><h1>Make it stick.</h1><p>Failed tests, hint-assisted solves, and skills due for a refresh.<br />A little recall today builds confidence for tomorrow.</p></div>{reviewSection}<div className={s.reviewExplainer}><Sparkles size={21} /><div><h3>Practice, pause, revisit.</h3><p>We bring tricky problems back sooner and space out confident solves. You can also choose “Review later” in your history whenever a concept feels shaky.</p></div></div></>}
-          {section === 'history' && <><div className={s.pageHeading}><span className={s.eyebrow}>LOOK HOW FAR YOU’RE GOING</span><h1>Progress has a story.</h1><p>Every test run helps you learn something. Here’s yours.</p></div>{historySection}</>}
+          {section === 'history' && <><JourneyMap key={user} weeks={data.curriculum} tasks={tasks} progress={data.progress} history={data.problem_history || []} user={user} onSolution={setSolutionId} onReview={(id, needsReview) => void flagReview(id, needsReview)} busyReview={busyReview} />{historySection}</>}
           {section === 'library' && <><div className={s.pageHeading}><span className={s.eyebrow}>A WORLD OF TENSORS TO EXPLORE</span><h1>Find your next challenge.</h1><p>{tasks.length} small adventures in PyTorch. Pick something that sparks your curiosity.</p></div><div className={s.filters}><div className={s.filterTabs}>{['all', 'easy', 'medium', 'hard'].map(value => <button key={value} className={filter === value ? s.selectedFilter : ''} onClick={() => setFilter(value)}>{value === 'all' ? 'All problems' : value[0].toUpperCase() + value.slice(1)}</button>)}</div><label className={s.search}><Search size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Find your next challenge…" aria-label="Search problem library" /></label></div><div className={s.libraryGrid}>{visibleTasks.map(task => <article className={s.libraryCard} key={task.id}><div className={s.libraryCardTop}><span className={`${s.difficulty} ${s[task.difficulty.toLowerCase()]}`}>{task.difficulty}</span>{progress.get(task.id)?.status === 'solved' && <span className={s.librarySolved}><CircleCheck size={14} /> Solved</span>}</div><div className={s.libraryGlyph}><Code2 size={26} /></div><h3>{task.title}</h3><p>{progress.get(task.id)?.attempts || 0} attempts{progress.get(task.id)?.needs_review ? ' · In your review list' : ''}</p><PracticeLink id={task.id} user={user} onSolution={setSolutionId}>Practice It!</PracticeLink></article>)}</div>{!visibleTasks.length && <p className={s.noResults}>No problems match your search.</p>}</>}
           <footer className={s.footer}><span><Flame size={14} /> Made for small wins and big ideas.</span><button onClick={() => void refresh()} disabled={refreshing}><RefreshCw size={13} className={refreshing ? s.spin : ''} /> {refreshing ? 'Syncing…' : 'Refresh progress'}</button><span>Keep your curiosity burning.</span></footer>
         </>}

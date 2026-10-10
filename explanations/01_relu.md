@@ -1,27 +1,51 @@
 # Implement ReLU
 
-## Goal and intuition
+This solution is a gate applied separately to every tensor element: a positive value passes through, while a finite non-positive value becomes zero. Read the single return statement from the inside out. There are no learned parameters and no dimensions to reduce.
 
-ReLU keeps positive activations and replaces non-positive activations with zero. It introduces a simple nonlinearity: a network built only from linear layers would still be one linear transformation, while ReLU lets different inputs activate different paths. This exercise implements the operation directly, without a built-in activation or clamp.
+## The input and the promise
 
-**Input and output:** `x` is a floating-point tensor of any shape. The output has the same shape and device. For example, `[-2, 0, 3]` becomes `[0, 0, 3]` for ordinary finite inputs.
+`x` is a floating-point tensor. It can be a vector, an image-like tensor, or a batch of token features. The output keeps the same shape and device. If a batch has shape `(B, D)`, `B` means the number of examples and `D` means features per example; the function never mixes examples or features.
 
-## Walk through the reference
+The mathematical rule is `max(0, x)` for each coordinate. The exercise bans the built-in ReLU and clamp operations, so the reference expresses that rule using a comparison and multiplication.
 
-1. **Find positive elements.** `x > 0` creates a Boolean tensor with `True` wherever an input is strictly positive. The comparison preserves every dimension of `x`.
-2. **Convert the mask into numbers.** `.float()` maps `True` to `1.0` and `False` to `0.0`, using float32. This produces a multiplier for each element.
-3. **Apply the gate.** Multiplying `x` by that mask keeps positive values and zeros finite negative values. The entire operation is vectorized, so no Python loop is needed.
+## Read the actual statement in three parts
 
-## Why gradients still work
+```python
+return x * (x > 0).float()
+```
 
-The comparison does not carry a useful derivative, but the multiplication still depends on `x`. Autograd treats the mask as a constant multiplier. Consequently, the derivative is one on positive inputs and zero on negative inputs:
+**First, `x > 0` asks a yes/no question at every location.** For `x = [-2, -1, 0, 1, 2]`, the answer is `[False, False, False, True, True]`. Notice the strict greater-than condition: zero is in the blocked group. Comparing a tensor with scalar zero automatically applies that same threshold to all coordinates.
 
-$$
-\frac{\partial y_i}{\partial x_i} = \mathbf{1}[x_i > 0].
-$$
+**Next, `.float()` turns answers into multipliers.** The Boolean mask becomes a float32 tensor containing `[0, 0, 0, 1, 1]`. Its shape is exactly `x.shape`. A one means “keep this value”; a zero means “remove it.”
 
-At zero, ReLU is not differentiable in the ordinary sense. This implementation chooses a zero gradient because its condition uses strict `>`; the judge permits either zero or one at that point.
+**Finally, `x * mask` is elementwise multiplication.** It is not matrix multiplication. Each input is multiplied only by the mask value at the same location, so there is no Python loop and no change in shape.
 
-## Pitfalls and reference limits
+| Input coordinate | `x > 0` | Float mask | Returned coordinate |
+|---:|:---:|---:|---:|
+| -2 | False | 0 | 0 |
+| 0 | False | 0 | 0 |
+| 3 | True | 1 | 3 |
 
-Avoid reconstructing the result with `torch.tensor(...)` or converting through NumPy: that would disconnect the gradient path. The mask multiplication also has two concrete limitations. A float32 mask can promote lower-precision inputs, so output dtype preservation is not guaranteed. Also, `-inf * 0` is `NaN`, whereas mathematical ReLU of negative infinity is zero. The provided tests exercise finite float32 values, shapes, gradients, and vectorized performance. Treat this as their compact reference implementation, rather than an exact replacement for every built-in ReLU edge case.
+This table also explains why simply returning the mask would be wrong: an input of `3` must return `3`, not `1`.
+
+## What happens during backpropagation?
+
+The comparison itself has no differentiable transition. However, the final multiplication still contains the original `x`, so autograd can follow that path. For the mask produced by this comparison, the derivative is its multiplier: zero on blocked values and one on positive values. At zero, where mathematical ReLU has a corner, this reference chooses a zero gradient.
+
+```python
+# Example: Check the gate and its backward gradient
+x = torch.tensor([-2., -1., 0., 1., 2.], requires_grad=True)
+out = relu(x)
+assert out.shape == x.shape
+assert torch.equal(out, torch.tensor([0., 0., 0., 1., 2.]))
+out.sum().backward()
+assert torch.equal(x.grad, torch.tensor([0., 0., 0., 1., 1.]))
+matrix = torch.tensor([[-3., 2.], [4., -1.]])
+assert torch.equal(relu(matrix), torch.tensor([[0., 2.], [4., 0.]]))
+```
+
+Summing the output asks how much that total changes when each input increases slightly. The positive coordinates contribute directly, while the blocked coordinates contribute nothing. Rebuilding the output through NumPy or a new `torch.tensor(...)` would lose that gradient connection.
+
+## Reference scope
+
+The example uses finite float32 values, as the judge does. The float32 mask can promote lower-precision inputs. Also, negative infinity times zero produces `NaN`, so the multiplication trick does not reproduce mathematical ReLU for that special value. These are limits of this exact reference expression, not extra behavior implemented by the code.

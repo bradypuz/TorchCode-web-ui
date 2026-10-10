@@ -1,28 +1,68 @@
 # Implement RMSNorm
 
-## Goal and intuition
+RMSNorm divides a feature vector by a measure of its overall magnitude, then applies a learned scale per feature. There is no mean subtraction: the code preserves the vector's direction before applying those featurewise weights. The entire reference consists of one denominator calculation and one return statement.
 
-RMSNorm rescales each feature vector by its root mean square magnitude. It does not subtract the mean, so it preserves the vector's direction before applying learned featurewise weights. Compared with LayerNorm, the central operation is simpler: measure overall size, divide by it, then scale individual features.
+## Give the dimensions names
 
-**Shapes:** `x` is `(..., D)` and `weight` is `(D,)`. The root mean square has shape `(..., 1)`, and the output has the same shape as `x`. This works equally for a matrix of examples or a `(B, S, D)` tensor of token representations.
+Let `D` be features per vector. Input `x` has shape `(...,D)`, such as `(B,S,D)` for `B` examples with `S` tokens each. `weight` has shape `(D,)`, and output has the same shape as `x`. Each token is normalized independently across its final feature axis.
 
-## Walk through the reference
+For `(2,3,4)`, the denominator has shape `(2,3,1)`. Every token has one scalar magnitude that broadcasts across its four features.
 
-1. **Measure squared magnitude.** `x.pow(2).mean(dim=-1, keepdim=True)` averages squared feature values within each vector. Squaring makes both positive and negative coordinates contribute to the size estimate.
-2. **Add stability and take the root.** `sqrt(mean_square + eps)` produces the denominator. Epsilon is placed inside the square root, matching the problem definition and avoiding a zero denominator for a zero vector.
-3. **Rescale and apply weights.** `x / rms` divides all coordinates in a feature vector by the same scalar. Multiplication by `weight` then broadcasts a learned scale across leading dimensions.
+## 1. Read the magnitude calculation from inside out
 
-## Why it works
+```python
+rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
+```
 
-For one vector,
+`x.pow(2)` squares every coordinate. This prevents positive and negative coordinates from canceling when measuring magnitude. For `[3,4]`, the squares are `[9,16]`.
 
-$$
-r=\sqrt{\frac{1}{D}\sum_i x_i^2+\epsilon},
-\qquad y_i=\frac{x_i}{r}w_i.
-$$
+`mean(dim=-1, keepdim=True)` averages across features, giving `(9+16)/2 = 12.5`. This is a mean square, not the sum of squares used by an ordinary Euclidean length. Keeping the axis gives shape `(1,)` for one vector or `(B,S,1)` for a token batch.
 
-If all weights equal one and epsilon is negligible, the normalized vector's mean square is near one. Its mean need not be zero: a constant nonzero vector remains a constant nonzero vector after normalization. This distinguishes RMSNorm from LayerNorm and is a useful way to check an implementation. All reductions and arithmetic preserve the autograd path to both `x` and `weight`.
+Adding `eps` before the square root protects the zero vector from a zero denominator. Finally, `sqrt` converts mean square to root mean square. Ignoring epsilon solely for this nonzero arithmetic example, `[3,4]` has RMS `sqrt(12.5) ≈ 3.5355`.
 
-## Pitfalls and reference limits
+## 2. Divide each vector and apply feature weights
 
-Using the mean of `x` instead of the mean of `x²` measures signed average rather than magnitude. Computing a norm across batch or sequence dimensions also mixes independent vectors. The reference does not supply a bias or center the input, and it does not create trainable weights itself. It performs squaring and reduction in the input dtype; extremely large values can overflow, especially in low precision, because there is no explicit float32 accumulation step. The judge uses finite inputs to check two- and three-dimensional shapes, nontrivial learned scales, agreement with the formula, and gradient flow.
+```python
+return x / rms * weight
+```
+
+The scalar RMS for each vector broadcasts across its features. `[3,4]` therefore becomes approximately `[0.8485,1.1314]`. Both coordinates are divided by the same number, preserving their ratio. Multiplying by `weight=[2,0.5]` then changes the coordinates to approximately `[1.6971,0.5657]`.
+
+The weights also broadcast across leading dimensions, but differently: there is one scale **per feature**, reused for all examples and tokens. The function receives those weights rather than creating a parameter itself.
+
+| Input | Mean square | RMS with `eps=0` | Before feature weights |
+|---|---:|---:|---|
+| `[3,4]` | 12.5 | `sqrt(12.5)` | `[3/r,4/r]` |
+| `[6,8]` | 50 | `2*sqrt(12.5)` | The same `[3/r,4/r]` |
+| `[2,2]` | 4 | 2 | `[1,1]` |
+
+The last row makes the absence of centering visible. A constant nonzero vector remains nonzero. Unit weights give a normalized mean square near one; they do not imply a zero mean.
+
+```torchcode-visual
+normalization
+```
+
+## Run the scale and gradient example
+
+```python
+# Example: Doubling a vector doubles its RMS too
+x = torch.tensor([[3., 4.], [6., 8.]], requires_grad=True)
+weight = torch.tensor([2., 0.5], requires_grad=True)
+mean_square = x.pow(2).mean(dim=-1, keepdim=True)
+assert torch.equal(mean_square, torch.tensor([[12.5], [50.]]))
+out = rms_norm(x, weight, eps=0.)
+r = 12.5 ** 0.5
+expected = torch.tensor([[6. / r, 2. / r], [6. / r, 2. / r]])
+assert torch.allclose(out, expected)
+assert out.shape == (2, 2)
+assert torch.equal(rms_norm(torch.tensor([[2., 2.]]), torch.ones(2), eps=0.), torch.ones(1, 2))
+assert torch.equal(rms_norm(torch.zeros(1, 2), torch.ones(2)), torch.zeros(1, 2))
+out.square().sum().backward()
+assert x.grad is not None and weight.grad is not None
+```
+
+Using `eps=0` here makes the nonzero examples exactly scale-invariant. The zero-vector assertion instead uses the default positive epsilon. In real use, epsilon slightly changes that scale invariance near zero.
+
+## Gradients and reference scope
+
+Autograd differentiates both the direct input in the numerator and the input-dependent denominator. Coordinates within the same vector are coupled through the mean square; vectors remain independent. The reference has no bias, mean subtraction, module state, or explicit wider accumulation dtype. Squaring very large low-precision values can overflow. These limits do not change the basic sequence: square, average, add epsilon, square root, divide, and scale.

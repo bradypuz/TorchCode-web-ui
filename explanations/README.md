@@ -2,7 +2,15 @@
 
 These 41 guides explain the implementations checked into `solutions/`. The practice dashboard serves these files in its **Explanation** tab, beside the reference code. They are authored ahead of time; opening a guide does not generate new text or record a practice attempt.
 
-Each guide covers the goal, input/output shapes, a step-by-step walkthrough, the relevant math, and important edge cases or limits of the reference. When a reference implementation changes, update its matching explanation too. Notebook setup cells, demos, and judge calls are excluded from the displayed solution code.
+Each guide teaches the actual reference code in small steps, with code excerpts, explanations of the key tensor operations, and worked examples showing intermediate values or shapes. Symbols are defined where they appear; formulas are connected to the operations that implement them. The guides also explain common mistakes and important limits of the reference.
+
+Read a guide alongside its **Solution Code** tab. Walkthrough blocks are excerpts of that implementation. To run a block labeled `# Example:`, first run the complete reference code, including its imports, then run the example in the same Python session. These examples use small inputs and assertions to show the expected results. Change an input and follow how the intermediate values change.
+
+Tables and tensor diagrams make the intermediate steps visible. Selected guides also have interactive examples in the dashboard: adjust a dropout probability, choose embedding IDs, change an attention query or mask, compare normalization axes, rotate feature pairs, explore sampling cutoffs, or inspect PPO clipping. These small examples illustrate the reference operations; they do not modify your practice code or record submissions.
+
+Interactive examples are embedded with a `torchcode-visual` fenced block naming the visual. Plain Markdown readers show that identifier; the dashboard renders the controls alongside the guide's static examples.
+
+When a reference implementation changes, update its matching explanation and check its examples too. Notebook setup cells, demos, and judge calls are excluded from the displayed solution code.
 
 | # | Problem | Explanation | Reference notebook |
 |---|---|---|---|

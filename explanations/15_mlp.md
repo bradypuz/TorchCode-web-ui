@@ -1,36 +1,78 @@
 # SwiGLU MLP
 
-## Goal and intuition
+## What the code is trying to do
 
-Build a feed-forward layer that uses one learned projection to control another. Unlike a simple activation between two linear layers, SwiGLU has two parallel branches: the **gate** changes how strongly each intermediate feature contributes, while the **up** branch supplies its content. The final projection brings the result back to the model's width.
+For each input vector, create some intermediate features, let a second set of features control their strength, and combine the result into an output vector. In a transformer these vectors usually represent tokens. This layer processes each token independently: changing token 2 does not directly change token 1's output.
 
-## Inputs and outputs
+`d_model` is the input and output width. `d_ff` is the intermediate width, often larger than `d_model`. An input of shape `(B, S, d_model)` produces an output of shape `(B, S, d_model)`, where `B` is the batch size and `S` the number of tokens. A `(B, d_model)` input also works. Both branches inside the layer have shape `(..., d_ff)`; `...` means all the input's leading dimensions.
 
-- Input `x`: `(B, S, d_model)` for token sequences, or `(B, d_model)` for a batch of vectors.
-- Both intermediate branches: `(..., d_ff)`.
-- Output: the same leading dimensions as `x`, with final width `d_model`.
+## Build the three learned projections
 
-The layers operate on the last dimension, so the sequence positions are processed independently. There is no interaction between tokens inside this MLP.
+```python
+super().__init__()
+self.gate_proj = nn.Linear(d_model, d_ff)
+self.up_proj = nn.Linear(d_model, d_ff)
+self.down_proj = nn.Linear(d_ff, d_model)
+```
 
-## Walk through the reference
+Calling `super().__init__()` initializes PyTorch's module machinery so assigned layers become registered submodules. Their parameters then appear in `model.parameters()` and are available to an optimizer.
 
-1. Create `gate_proj` and `up_proj`, each mapping `d_model` to `d_ff`. Create `down_proj` mapping `d_ff` back to `d_model`.
-2. Evaluate `gate_proj(x)` and apply `F.silu`. SiLU multiplies its input by its sigmoid, producing a smooth activation.
-3. Evaluate `up_proj(x)` separately. Multiply its output element by element with the activated gate. These branches need matching shapes.
-4. Pass the product through `down_proj` and return the result.
+Each `nn.Linear(a, b)` accepts a vector of length `a` and returns one of length `b`. Its weight has shape `(b, a)`, and it computes `x @ weight.T + bias`. Biases are enabled in this reference. `gate_proj` and `up_proj` have identical dimensions but separate parameters, so they can learn different transformations. `down_proj` combines the intermediate features and restores the original width.
 
-## Why it works
+## Follow one vector through `forward`
 
-$$
-\operatorname{SiLU}(z)=z\,\sigma(z)
-$$
+The reference compresses the whole forward pass into one statement:
 
-$$
-y=W_{\mathrm{down}}\bigl(\operatorname{SiLU}(W_{\mathrm{gate}}x+b_{\mathrm{gate}})\odot(W_{\mathrm{up}}x+b_{\mathrm{up}})\bigr)+b_{\mathrm{down}}
-$$
+```python
+return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+```
 
-The multiplication lets the two projections interact before the final linear combination. The gate is not a probability: SiLU can be negative and is not restricted to `[0, 1]`. All projections and operations remain differentiable, so gradients reach the input and every parameter.
+Read it from the inside out. `gate_proj(x)` first creates a gate value for each intermediate feature. `F.silu(z)` computes `z * sigmoid(z)`, where `sigmoid(z) = 1 / (1 + exp(-z))`. For example, SiLU changes `1` into about `0.7311`, changes `0` into `0`, and changes `-1` into about `-0.2689`.
 
-## Pitfalls and reference scope
+`up_proj(x)` creates the other branch from the **original** input. The `*` multiplies corresponding features: feature 0 in one branch multiplies feature 0 in the other. This is elementwise multiplication, so the feature count stays `d_ff`. Finally, `down_proj(...)` forms learned linear combinations of those products. There is no activation after this last projection.
 
-Use elementwise multiplication, not a matrix product, between the branches. Applying SiLU to both branches would change the requested formula. The reference uses `nn.Linear` with its default **biases enabled**; reproducing a bias-free architecture would give different parameters and behavior. It includes no residual connection, normalization, or dropout. Those belong to a surrounding transformer block, not this exercise. The local judge checks parameter dimensions, 2-D and 3-D outputs, the explicit formula, and gradient flow.
+The word “gate” describes the branch's role, not a restriction on its values. SiLU can be negative and can exceed one. Consequently, it can reverse the sign or enlarge a feature as well as weaken it.
+
+## A fully controlled numerical example
+
+Set the gate projection to the identity, the up projection to twice the identity, and the down projection to produce `[a + b, a - b]` from intermediate features `[a, b]`. This removes random initialization from the calculation.
+
+For the first token `[0, 1]`, the gate becomes `[0, 0.7311]`, the up branch becomes `[0, 2]`, and their product is `[0, 1.4621]`. The output is therefore `[1.4621, -1.4621]`.
+
+For `[1, -1]`, the product is approximately `[1.4621, 0.5379]`. The negative gate and negative up feature multiply into a positive second product. The final output is `[2.0000, 0.9242]`.
+
+| Token | Activated gate | Up branch | Elementwise product | Output |
+|---|---|---|---|---|
+| `[0, 1]` | `[0, 0.7311]` | `[0, 2]` | `[0, 1.4621]` | `[1.4621, -1.4621]` |
+| `[1, -1]` | `[0.7311, -0.2689]` | `[2, -2]` | `[1.4621, 0.5379]` | `[2, 0.9242]` |
+
+Run this after loading the reference implementation:
+
+```python
+# Example: Trace two tokens through controlled SwiGLU weights
+model = SwiGLUMLP(d_model=2, d_ff=2)
+with torch.no_grad():
+    model.gate_proj.weight.copy_(torch.eye(2))
+    model.gate_proj.bias.zero_()
+    model.up_proj.weight.copy_(2 * torch.eye(2))
+    model.up_proj.bias.zero_()
+    model.down_proj.weight.copy_(torch.tensor([[1., 1.], [1., -1.]]))
+    model.down_proj.bias.zero_()
+x = torch.tensor([[[0., 1.], [1., -1.]]])
+y = model(x)
+s = torch.sigmoid(torch.tensor(1.)).item()
+expected = torch.tensor([[[2*s, -2*s], [2., 4*s - 2]]])
+assert y.shape == (1, 2, 2)
+assert torch.allclose(y, expected, atol=1e-6)
+y.sum().backward()
+assert x.grad is None  # This input did not request gradients.
+assert model.gate_proj.weight.grad is not None
+assert model.up_proj.weight.grad is not None
+assert model.down_proj.weight.grad is not None
+```
+
+The final assertions also show that all three projections participate in differentiation. An input needs `requires_grad=True` if you want its own gradient.
+
+## Common mistakes and reference scope
+
+Use `*` between the branches, not `@`. Apply SiLU only to the gate branch, and send the original input to both projections. Preserve the default biases when reproducing this implementation. The reference has no residual connection, normalization, or dropout; those would require additional code around this MLP.

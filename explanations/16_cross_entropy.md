@@ -1,36 +1,60 @@
-# Cross-Entropy Loss
+# Cross-entropy loss
 
-## Goal and intuition
+## What this function computes
 
-Turn a batch of class scores into a loss that penalizes low probability assigned to the correct class. The model supplies **logits**, not probabilities. Cross-entropy takes the negative logarithm of the correct class probability, then averages across examples. The reference computes log probabilities directly so it does not need to build a softmax and then take its logarithm.
+A classifier produces one score for each possible class. These scores, called **logits**, do not have to be positive or add up to one. Cross-entropy measures how much probability the classifier assigns to the correct class: a high correct-class probability gives a small loss; a low one gives a large loss.
 
-## Inputs and outputs
+Here `logits` has shape `(N, C)`: `N` examples and `C` classes. `targets` is an integer tensor of shape `(N,)`; each entry is a class index from `0` through `C - 1`. The return value is one scalar tensor, the mean loss across the examples. Targets are indices, not vectors of class probabilities.
 
-- `logits`: floating tensor `(B, C)`, one row per example and one column per class.
-- `targets`: integer tensor `(B,)`, containing the correct column index for each row.
-- Return value: a scalar tensor containing the mean loss.
+## Convert scores to log probabilities safely
 
-For example, targets `[2, 0]` select class 2 from row 0 and class 0 from row 1. They are class indices, not one-hot vectors.
+```python
+log_probs = logits - torch.logsumexp(logits, dim=-1, keepdim=True)
+```
 
-## Walk through the reference
+For one row, softmax would compute `exp(score) / sum(exp(all_scores))`. Taking its logarithm gives `score - log(sum(exp(all_scores)))`, which is exactly the expression above. Working directly with logarithms avoids forming a potentially enormous exponential and then taking its logarithm.
 
-1. Compute `torch.logsumexp(logits, dim=-1, keepdim=True)`. The result has shape `(B, 1)` and is the log normalizer for each row.
-2. Subtract that result from every logit. Broadcasting produces `(B, C)` log probabilities.
-3. Build row indices with `torch.arange(targets.shape[0])`, and use paired row/target indexing to gather one log probability per example.
-4. Average the selected values and negate the result.
+`torch.logsumexp` performs that calculation safely. Internally, subtracting a row's largest score keeps the exponentials small. For logits `[1000, 1001]`, naïvely exponentiating both entries overflows ordinary floating-point numbers. `logsumexp` still produces meaningful log probabilities.
 
-## Why it works
+`dim=-1` means sum over classes. `keepdim=True` keeps the result shaped `(N, 1)`. When this is subtracted from `(N, C)`, PyTorch repeats each row's one normalizing value across its classes. This is **broadcasting**, matching dimensions of size one without manually copying them.
 
-$$
-\log p_{b,c}=z_{b,c}-\log\sum_j e^{z_{b,j}}
-$$
+## Select the correct class from each row
 
-$$
-L=-\frac{1}{B}\sum_{b=1}^{B}\log p_{b,y_b}
-$$
+```python
+return -log_probs[torch.arange(targets.shape[0]), targets].mean()
+```
 
-`logsumexp` evaluates the logarithm of the exponential sum stably, using a shift rather than naively exponentiating large logits. Thus a confidently correct row such as `[1000, 0, 0]` can produce a finite loss near zero. Adding the same constant to every logit in a row does not change its probabilities or loss.
+For three targets `[2, 0, 1]`, `torch.arange(3)` gives row indices `[0, 1, 2]`. Together these select `log_probs[0, 2]`, `log_probs[1, 0]`, and `log_probs[2, 1]`. They select three paired coordinates, not a rectangular submatrix.
 
-## Pitfalls and reference scope
+The selected log probabilities are usually negative. The minus sign turns them into nonnegative losses, and `.mean()` averages those losses. The scalar remains connected to the logits, so calling `.backward()` computes gradients.
 
-Keep the normalizer dimension so subtraction broadcasts across classes. Passing already normalized probabilities would apply the wrong transformation. The reference supports this particular `(B, C)` integer-target task: it does not implement class weights, label smoothing, ignored labels, soft targets, or selectable reductions. It does not validate target bounds or empty batches; an empty mean is undefined and produces `NaN`. The judge checks agreement with the ordinary PyTorch loss, large-logit stability, scalar output, and gradients.
+## Two examples, including a large score offset
+
+Use logits equal to the logarithms of these already-normalized probabilities. Their `logsumexp` is zero, making each intermediate value easy to inspect.
+
+| Example | Class probabilities | Target | Selected log probability | Individual loss |
+|---|---|---|---|---|
+| 0 | `[0.25, 0.75]` | `1` | `log(0.75) ≈ -0.2877` | `0.2877` |
+| 1 | `[0.80, 0.20]` | `0` | `log(0.80) ≈ -0.2231` | `0.2231` |
+
+Their mean is about `0.2554`. Adding `1000` to every score in a row leaves softmax probabilities unchanged: the common exponential factor cancels. The second assertion below checks this stability property.
+
+```python
+# Example: Average correct-class losses and ignore a common score offset
+probabilities = torch.tensor([[0.25, 0.75], [0.80, 0.20]])
+logits = probabilities.log().detach().requires_grad_(True)
+targets = torch.tensor([1, 0], dtype=torch.long)
+loss = cross_entropy_loss(logits, targets)
+expected = -(torch.log(torch.tensor(0.75)) + torch.log(torch.tensor(0.80))) / 2
+assert loss.shape == torch.Size([])
+assert torch.allclose(loss, expected, atol=1e-6)
+assert torch.allclose(cross_entropy_loss(logits + 1000, targets), expected, atol=1e-4)
+loss.backward()
+assert torch.allclose(logits.grad, torch.tensor([[0.125, -0.125], [-0.10, 0.10]]), atol=1e-6)
+```
+
+The negative gradient at a correct-class score says increasing that score decreases the loss. The positive gradient at the other score says increasing it increases the loss. Division by two comes from averaging two examples.
+
+## Common mistakes and reference scope
+
+Do not apply softmax before passing logits here, and do not take the log of raw logits. Keep the normalizing dimension so row subtraction broadcasts correctly. This implementation expects a nonempty 2-D batch with valid target indices. It does not implement label smoothing, ignored targets, class weighting, or a selectable reduction.

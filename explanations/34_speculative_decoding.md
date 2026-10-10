@@ -1,38 +1,83 @@
 # Speculative Decoding Acceptance and Rejection
 
-## Intuition
-
-A small draft model proposes tokens cheaply. A larger target model evaluates those proposals, accepting tokens when their draft probabilities are compatible with the target. At the first rejection, a correction sample replaces that proposal and the current verification block stops.
+A draft model proposes a short block of tokens. This function checks those proposals against target-model probabilities, keeps an accepted prefix, and replaces the first rejected token. It then stops because later probability rows belong to the original proposed prefix.
 
 ## Inputs and output
 
-`target_probs` and `draft_probs` have shape `(K, V)`: normalized vocabulary probabilities for each of `K` draft positions. `draft_tokens` has shape `(K,)` and contains integer token IDs. The output is a Python list containing the accepted prefix and, on rejection, one replacement token. For positive `K`, its length lies between one and `K`.
+`target_probs` and `draft_probs` have shape `(K, V)`, with a normalized vocabulary distribution at each draft position. `draft_tokens` is an integer tensor of shape `(K,)`. The output is a Python list. If all proposals pass it contains `K` tokens; otherwise it contains accepted earlier tokens followed by one correction token.
 
-## Implementation walkthrough
+## Reading the actual code
 
-1. Visit draft positions in order and extract the proposed token ID.
-2. Compute target probability divided by draft probability for that token, flooring the denominator at `1e-10`.
-3. Draw a uniform random number and accept if it is below the ratio capped at one. Append accepted tokens and continue.
-4. At a rejection, compute the positive part of `target_probs[i] - draft_probs[i]` across the vocabulary.
-5. Normalize this correction distribution. If its mass is zero, use a uniform distribution as the reference's fallback.
-6. Sample and append one replacement, then return immediately. If every proposal is accepted, return all `K` draft tokens.
+```python
+K = len(draft_tokens)
+accepted = []
+for i in range(K):
+    t = draft_tokens[i].item()
+    ratio = target_probs[i, t] / max(draft_probs[i, t].item(), 1e-10)
+```
 
-## Why it works
+Positions are processed in order. `.item()` turns the proposed ID into a Python integer so it can index the row. The ratio compares target probability `p(t)` to draft probability `q(t)`. If the target likes the proposal at least as much as the draft does, its ordinary acceptance probability is one. If `p(t)=0.2` and `q(t)=0.5`, the ratio is `0.4`.
 
-With target distribution $p$ and draft distribution $q$, acceptance uses:
+```python
+if torch.rand(1).item() < min(1.0, ratio.item()):
+    accepted.append(t)
+```
 
-$$
-\alpha(v)=\min\left(1,\frac{p(v)}{q(v)}\right)
-$$
+The random draw is uniform between zero and one. Capping the ratio at one makes it a probability. A draw of `0.3` accepts the `0.4` example, while `0.7` rejects it. Accepted IDs are appended unchanged, and the loop proceeds to the next position.
 
-A proposal drawn from $q$ contributes accepted mass $q(v)\alpha(v)=\min(q(v),p(v))$. The remaining target mass is the positive difference:
+| Proposed token probability | Draft `q(t)` | Target `p(t)` | Acceptance probability |
+| --- | ---: | ---: | ---: |
+| Target prefers it | 0.2 | 0.5 | 1 |
+| Target prefers it less | 0.5 | 0.2 | 0.4 |
+| Target forbids it | 1 | 0 | 0 |
+| Identical tiny probability | `1e-12` | `1e-12` | 0.01 because denominator is floored |
 
-$$
-r(v)=\frac{\max(p(v)-q(v),0)}{\sum_u\max(p(u)-q(u),0)}
-$$
+The last row is a reference-specific detail. The denominator becomes `1e-10`, so identical distributions do not guarantee acceptance for an extremely rare supplied proposal. This differs from the ideal `p/q` ratio, which would be one.
 
-The accepted part plus the correctly weighted residual recovers the target distribution under the algorithm's sampling assumptions. This exact distribution argument ignores the reference's denominator floor: draft probabilities below `1e-10` can deviate from it, even when the two distributions are identical. The judge checks identical distributions, bounded output lengths, and valid token IDs.
+```python
+adjusted = torch.clamp(target_probs[i] - draft_probs[i], min=0)
+s = adjusted.sum()
+if s > 0:
+    adjusted = adjusted / s
+else:
+    adjusted = torch.ones_like(adjusted) / adjusted.shape[0]
+```
 
-## Pitfalls and reference scope
+After rejection, sample where the target needs more mass than the draft supplied. For `p=[0.2,0.8]` and `q=[0.5,0.5]`, the difference is `[-0.3,0.3]`, the positive part is `[0,0.3]`, and normalization gives `[0,1]`. Token one must replace a rejected token zero. If every positive difference is zero, the code falls back to uniform probabilities. That fallback can be reached when the denominator floor causes rejection with identical distributions.
 
-After rejection, later rows were evaluated for a prefix that no longer matches, so stop immediately. The distribution-preservation argument assumes draft tokens were sampled from their stated draft distributions and both probability tables correspond to the proper prefix. This function does not generate either table, run models, handle EOS, or append the extra target token used by some full speculative-decoding implementations after all proposals pass. Inputs are not validated, and `K=0` returns an empty list. Randomness and the denominator floor are part of the reference behavior.
+```python
+accepted.append(torch.multinomial(adjusted, 1).item())
+return accepted
+```
+
+The immediate return matters: a replacement changes the prefix, making later rows inappropriate. If the loop finishes without rejection, the final return simply gives the full accepted block.
+
+## Run acceptance, rejection, and the tiny-probability case
+
+Load the reference solution first, then run:
+
+```python
+# Example: Verify accepted blocks, correction sampling, and the denominator floor
+torch.manual_seed(0)
+equal = torch.tensor([[0.7, 0.3], [0.2, 0.8]])
+assert speculative_decode(equal, equal, torch.tensor([0, 1])) == [0, 1]
+
+target = torch.tensor([[0.0, 1.0], [0.5, 0.5]])
+draft = torch.tensor([[1.0, 0.0], [0.5, 0.5]])
+assert speculative_decode(target, draft, torch.tensor([0, 0])) == [1]
+
+tiny = torch.tensor([[1e-12, 1.0 - 1e-12], [0.5, 0.5]], dtype=torch.float64)
+ratio = tiny[0, 0] / max(tiny[0, 0].item(), 1e-10)
+assert abs(ratio.item() - 0.01) < 1e-12
+torch.manual_seed(0)
+assert torch.rand(1).item() > ratio.item()
+torch.manual_seed(0)
+result = speculative_decode(tiny, tiny, torch.tensor([0, 1]))
+assert len(result) == 1 and result[0] in (0, 1)
+```
+
+The second call replaces a guaranteed rejection and skips position one. The last call exposes the floor rather than silently assuming identical rows always pass.
+
+## Common mistakes and reference limits
+
+The target-distribution argument assumes draft tokens were sampled from their stated distributions and every row matches its prefix; the floor slightly changes that ideal argument. This function does not run either model, generate proposals, handle EOS, or append an extra target token after full acceptance. It does not validate inputs, and `K=0` returns an empty list.

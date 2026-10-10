@@ -91,5 +91,6 @@ def submit_code(task_id: str, request: SubmitRequest):
     # Validate profile before executing code so invalid requests have no side effects.
     get_store().profile(request.user_id)
     result = execute_code(task_id, request.code)
-    get_store().record_attempt(request.user_id, task_id, result, hint_used=request.hint_used)
+    get_store().record_attempt(request.user_id, task_id, result,
+                               hint_used=request.hint_used, code=request.code)
     return result
