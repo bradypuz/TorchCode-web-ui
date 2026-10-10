@@ -11,6 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from torch_judge.tasks import TASKS, get_task
 from torch_judge.web_engine import execute_code
 from api.parser import get_all_templates
+from api.implementation_lines import get_implementation_line_counts
 from api.practice import get_store, router as practice_router
 from api.solutions import get_solution
 
@@ -46,6 +47,7 @@ app.add_middleware(
 
 # Load templates on startup
 TEMPLATES = get_all_templates()
+IMPLEMENTATION_LINES = get_implementation_line_counts()
 
 class SubmitRequest(BaseModel):
     code: str
@@ -59,7 +61,8 @@ def list_tasks():
         tasks_list.append({
             "id": task_id,
             "title": task_data["title"],
-            "difficulty": task_data.get("difficulty", "Unknown")
+            "difficulty": task_data.get("difficulty", "Unknown"),
+            "implementation_lines": IMPLEMENTATION_LINES.get(task_id),
         })
     return tasks_list
 

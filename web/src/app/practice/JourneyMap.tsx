@@ -1,11 +1,11 @@
 'use client';
 
 import { useEffect, useId, useRef, useState, type CSSProperties, type RefObject } from 'react';
-import { ArrowRight, BookOpen, Check, ChevronRight, Compass, Flag, RefreshCw, Sparkles, Star, Trophy } from 'lucide-react';
+import { ArrowRight, BookOpen, Check, ChevronRight, Code2, Compass, Flag, RefreshCw, Sparkles, Star, Trophy } from 'lucide-react';
 import s from './journey.module.css';
 
 export type JourneyWeek = { week: number; focus: string; task_ids: string[]; solved: number; total: number };
-export type JourneyTask = { id: string; title: string; difficulty: string };
+export type JourneyTask = { id: string; title: string; difficulty: string; implementation_lines?: number | null };
 export type JourneyProgress = { id: string; status: string; needs_review: boolean; attempts: number; last_attempt_at?: string | null };
 export type JourneyHistory = { id: number; task_id: string; title: string; difficulty: string; success: boolean; passed: number; total: number; created_at: string; hint_used: boolean; failed_tests: string[]; attempts: number; solved: boolean; needs_review: boolean };
 export type JourneyMapProps = {
@@ -17,6 +17,8 @@ export type JourneyMapProps = {
   onSolution: (id: string) => void;
   onReview?: (id: string, needsReview: boolean) => void;
   busyReview?: string;
+  showCodeLines: boolean;
+  onShowCodeLines: (show: boolean) => void;
 };
 
 const WORLDS = [
@@ -131,8 +133,13 @@ function formatDate(value: string) {
   return Number.isNaN(date.getTime()) ? 'Date unavailable' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-function JourneyForUser({ weeks, tasks, progress, history, user, onSolution, onReview, busyReview }: JourneyMapProps) {
+function codeLineLabel(count?: number | null, toImplement = false) {
+  return typeof count === 'number' && Number.isInteger(count) && count >= 0 ? `${count} ${count === 1 ? 'line' : 'lines'}${toImplement ? ' to implement' : ''}` : 'Count unavailable';
+}
+
+function JourneyForUser({ weeks, tasks, progress, history, user, onSolution, onReview, busyReview, showCodeLines, onShowCodeLines }: JourneyMapProps) {
   const detailId = useId();
+  const codeLinesHelpId = useId();
   const pathAreaRef = useRef<HTMLDivElement>(null);
   const taskById = new Map(tasks.map(task => [task.id, task]));
   const progressById = new Map(progress.map(item => [item.id, item]));
@@ -146,7 +153,7 @@ function JourneyForUser({ weeks, tasks, progress, history, user, onSolution, onR
   const [selection, setSelection] = useState({ week: initialWeek?.week || 1, id: nextId || initialWeek?.task_ids[0] || '' });
   const selectedWeek = weeks.find(week => week.week === selection.week) || initialWeek;
   const selectedId = selectedWeek?.task_ids.includes(selection.id) ? selection.id : selectedWeek?.task_ids.find(id => !isSolved(id)) || selectedWeek?.task_ids[0];
-  const selectedTask = selectedId ? taskById.get(selectedId) || { id: selectedId, title: selectedId.replaceAll('_', ' '), difficulty: 'Practice' } : undefined;
+  const selectedTask: JourneyTask | undefined = selectedId ? taskById.get(selectedId) || { id: selectedId, title: selectedId.replaceAll('_', ' '), difficulty: 'Practice' } : undefined;
   const selectedHistory = selectedId ? historyById.get(selectedId) : undefined;
   const selectedProgress = selectedId ? progressById.get(selectedId) : undefined;
   const selectedState = selectedId ? stateFor(selectedId) : 'Not started';
@@ -166,6 +173,11 @@ function JourneyForUser({ weeks, tasks, progress, history, user, onSolution, onR
     <div className={s.journeyHeader}>
       <div><span className={s.eyebrow}><Compass size={13} /> A LITTLE FURTHER, EVERY DAY</span><h1>Your journey<span aria-hidden="true">✦</span></h1><p>Four worlds to explore. {total} problems to make your own.</p></div>
       <div className={s.courseProgress}><span className={s.courseProgressIcon}><Trophy size={22} /></span><div><strong>{solved}<span> / {total}</span></strong><small>problems solved</small></div></div>
+    </div>
+
+    <div className={s.mapOptions}>
+      <div className={s.codeLinesCopy}><span className={s.codeLinesIcon}><Code2 size={18} aria-hidden="true" /></span><div><strong>Peek at the coding effort</strong><p id={codeLinesHelpId}>Added or changed code lines in the solution vs. template. Comments and setup excluded; your approach may vary.</p></div></div>
+      <button type="button" role="switch" aria-checked={showCodeLines} aria-describedby={codeLinesHelpId} className={s.codeLinesToggle} onClick={() => onShowCodeLines(!showCodeLines)}><span>Show code lines</span><span className={s.switchTrack} aria-hidden="true"><span /></span></button>
     </div>
 
     <div className={s.worlds} aria-label="Choose a study week">
@@ -201,10 +213,11 @@ function JourneyForUser({ weeks, tasks, progress, history, user, onSolution, onR
               const next = nextId === id;
               const style = { '--desktop-col': desktopRow % 2 ? 3 - index % 3 : index % 3 + 1, '--desktop-row': desktopRow + 1, '--mobile-col': mobileRow % 2 ? 2 - index % 2 : index % 2 + 1, '--mobile-row': mobileRow + 1 } as CSSProperties;
               return <li key={id} className={s.lesson} style={style}>
-                <button className={`${s.lessonButton} ${chosen ? s.chosenLesson : ''} ${isSolved(id) ? s.solvedLesson : ''} ${needsReview(id) ? s.reviewLesson : ''}`} onClick={() => setSelection({ week: selectedWeek.week, id })} aria-current={chosen ? 'step' : undefined} aria-controls={detailId} aria-label={`Lesson ${index + 1}: ${task?.title || id}, ${state}${next ? ', recommended next lesson' : ''}`}>
+                <button className={`${s.lessonButton} ${chosen ? s.chosenLesson : ''} ${isSolved(id) ? s.solvedLesson : ''} ${needsReview(id) ? s.reviewLesson : ''}`} onClick={() => setSelection({ week: selectedWeek.week, id })} aria-current={chosen ? 'step' : undefined} aria-controls={detailId} aria-label={`Lesson ${index + 1}: ${task?.title || id}, ${state}${next ? ', recommended next lesson' : ''}${showCodeLines ? `, ${codeLineLabel(task?.implementation_lines, true)}` : ''}`}>
                   <span data-journey-node className={s.lessonMedallion}>{needsReview(id) ? <RefreshCw size={21} /> : isSolved(id) ? <Check size={24} strokeWidth={3} /> : <span>{index + 1}</span>}{isSolved(id) && <Star className={s.lessonStar} size={14} fill="currentColor" />}</span>
                   <span className={s.lessonName}>{task?.title || id.replaceAll('_', ' ')}</span>
                   {next ? <span className={s.nextLesson}><Sparkles size={9} /> UP NEXT</span> : <span className={s.lessonStatus}>{state === 'Not started' ? `LESSON ${String(index + 1).padStart(2, '0')}` : state}</span>}
+                  {showCodeLines && <span className={s.codeLineBadge} data-implementation-lines={task?.implementation_lines ?? 'unavailable'}><Code2 size={11} aria-hidden="true" />{codeLineLabel(task?.implementation_lines)}</span>}
                 </button>
               </li>;
             })}
@@ -220,6 +233,7 @@ function JourneyForUser({ weeks, tasks, progress, history, user, onSolution, onR
           <h3>{selectedTask.title}</h3>
           <span className={`${s.stateBadge} ${selectedState === 'Needs review' ? s.reviewState : selectedState === 'Solved' ? s.solvedState : ''}`}>{selectedState === 'Solved' ? <Check size={13} /> : selectedState === 'Needs review' ? <RefreshCw size={12} /> : <span className={s.stateDot} />}{selectedState}</span>
           <p className={s.panelIntro}>{selectedState === 'Solved' ? 'Look at you go. Keep this skill fresh with another run.' : selectedState === 'Needs review' ? 'A familiar trail worth walking again. Give this one a little extra practice.' : selectedState === 'In progress' ? 'You’ve already taken the first step. Pick up where you left off.' : 'Start with a small idea. Turn it into working PyTorch, one test at a time.'}</p>
+          {showCodeLines && <div className={s.panelCodeLines}><Code2 size={17} aria-hidden="true" /><div><strong>{codeLineLabel(selectedTask.implementation_lines, true)}</strong><span>Based on the reference solution</span></div></div>}
           <a className={s.practiceButton} href={`http://localhost:3000/?task=${encodeURIComponent(selectedTask.id)}&user=${encodeURIComponent(user)}`} target="_blank" rel="noreferrer">Practice It!<ArrowRight size={17} /></a>
           <button className={s.solutionButton} onClick={() => onSolution(selectedTask.id)}><BookOpen size={15} /> Solution</button>
           <div className={s.lessonStats}><div><strong>{attemptsFor(selectedTask.id)}</strong><span>{attemptsFor(selectedTask.id) === 1 ? 'attempt' : 'attempts'}</span></div><div><strong>{selectedHistory ? <>{selectedHistory.passed}<small>/{selectedHistory.total}</small></> : '—'}</strong><span>latest tests passed</span></div></div>

@@ -19,7 +19,7 @@ type Dashboard = {
   plan: Problem[]; reviews: Problem[]; history: Attempt[]; problem_history: HistoryProblem[]; progress: Progress[];
   curriculum: { week: number; focus: string; task_ids: string[]; solved: number; total: number }[];
 };
-type Task = { id: string; title: string; difficulty: string };
+type Task = { id: string; title: string; difficulty: string; implementation_lines?: number | null };
 type Section = 'today' | 'review' | 'history' | 'library';
 
 function localDay() {
@@ -66,6 +66,7 @@ export default function PracticePage() {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
   const [section, setSection] = useState<Section>('today');
+  const [showCodeLines, setShowCodeLines] = useState(false);
   const [showProfiles, setShowProfiles] = useState(false);
   const [profileName, setProfileName] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
@@ -78,12 +79,31 @@ export default function PracticePage() {
   const modalRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
-    const initialUser = new URLSearchParams(window.location.search).get('user') || localStorage.getItem('torchcode_practice_user') || 'local';
-    const storedGoal = Number(localStorage.getItem(`torchcode_goal_${initialUser}`) || 3);
+    const requestedUser = new URLSearchParams(window.location.search).get('user');
+    let initialUser = requestedUser || 'local';
+    let storedGoal = 3;
+    let storedCodeLines = false;
+    try {
+      initialUser = requestedUser || localStorage.getItem('torchcode_practice_user') || 'local';
+      storedGoal = Number(localStorage.getItem(`torchcode_goal_${initialUser}`) || 3);
+      storedCodeLines = localStorage.getItem('torchcode_journey_code_lines') === 'true';
+    } catch {
+      // Use defaults when the browser does not allow local storage.
+    }
     setUser(initialUser);
     setGoal(Number.isInteger(storedGoal) && storedGoal >= 1 && storedGoal <= 10 ? storedGoal : 3);
+    setShowCodeLines(storedCodeLines);
     setReady(true);
   }, []);
+
+  function changeCodeLines(show: boolean) {
+    setShowCodeLines(show);
+    try {
+      localStorage.setItem('torchcode_journey_code_lines', String(show));
+    } catch {
+      // The toggle still works when browser storage is unavailable.
+    }
+  }
 
   const refresh = useCallback(async () => {
     if (!ready) return;
@@ -215,7 +235,7 @@ export default function PracticePage() {
             {reviewSection}{historySection}
           </>}
           {section === 'review' && <><div className={s.pageHeading}><div className={s.pageHeadingIcon}><RefreshCw size={28} /></div><span className={s.eyebrow}>THE COMEBACK IS PART OF THE CLIMB</span><h1>Make it stick.</h1><p>Failed tests, hint-assisted solves, and skills due for a refresh.<br />A little recall today builds confidence for tomorrow.</p></div>{reviewSection}<div className={s.reviewExplainer}><Sparkles size={21} /><div><h3>Practice, pause, revisit.</h3><p>We bring tricky problems back sooner and space out confident solves. You can also choose “Review later” in your history whenever a concept feels shaky.</p></div></div></>}
-          {section === 'history' && <><JourneyMap key={user} weeks={data.curriculum} tasks={tasks} progress={data.progress} history={data.problem_history || []} user={user} onSolution={setSolutionId} onReview={(id, needsReview) => void flagReview(id, needsReview)} busyReview={busyReview} />{historySection}</>}
+          {section === 'history' && <><JourneyMap key={user} weeks={data.curriculum} tasks={tasks} progress={data.progress} history={data.problem_history || []} user={user} onSolution={setSolutionId} onReview={(id, needsReview) => void flagReview(id, needsReview)} busyReview={busyReview} showCodeLines={showCodeLines} onShowCodeLines={changeCodeLines} />{historySection}</>}
           {section === 'library' && <><div className={s.pageHeading}><span className={s.eyebrow}>A WORLD OF TENSORS TO EXPLORE</span><h1>Find your next challenge.</h1><p>{tasks.length} small adventures in PyTorch. Pick something that sparks your curiosity.</p></div><div className={s.filters}><div className={s.filterTabs}>{['all', 'easy', 'medium', 'hard'].map(value => <button key={value} className={filter === value ? s.selectedFilter : ''} onClick={() => setFilter(value)}>{value === 'all' ? 'All problems' : value[0].toUpperCase() + value.slice(1)}</button>)}</div><label className={s.search}><Search size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Find your next challenge…" aria-label="Search problem library" /></label></div><div className={s.libraryGrid}>{visibleTasks.map(task => <article className={s.libraryCard} key={task.id}><div className={s.libraryCardTop}><span className={`${s.difficulty} ${s[task.difficulty.toLowerCase()]}`}>{task.difficulty}</span>{progress.get(task.id)?.status === 'solved' && <span className={s.librarySolved}><CircleCheck size={14} /> Solved</span>}</div><div className={s.libraryGlyph}><Code2 size={26} /></div><h3>{task.title}</h3><p>{progress.get(task.id)?.attempts || 0} attempts{progress.get(task.id)?.needs_review ? ' · In your review list' : ''}</p><PracticeLink id={task.id} user={user} onSolution={setSolutionId}>Practice It!</PracticeLink></article>)}</div>{!visibleTasks.length && <p className={s.noResults}>No problems match your search.</p>}</>}
           <footer className={s.footer}><span><Flame size={14} /> Made for small wins and big ideas.</span><button onClick={() => void refresh()} disabled={refreshing}><RefreshCw size={13} className={refreshing ? s.spin : ''} /> {refreshing ? 'Syncing…' : 'Refresh progress'}</button><span>Keep your curiosity burning.</span></footer>
         </>}
