@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import logging
 import sys
 import os
 
@@ -10,6 +11,24 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from torch_judge.tasks import TASKS, get_task
 from torch_judge.web_engine import execute_code
 from api.parser import get_all_templates
+
+
+class _IgnoreDebuggerProbes(logging.Filter):
+    """Hide 404s from editors/browsers probing localhost for a Chrome DevTools endpoint."""
+
+    PROBE_PATHS = {"/", "/json/version", "/json", "/json/list"}
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # uvicorn.access record args: (client_addr, method, path, http_version, status_code)
+        args = record.args
+        if isinstance(args, tuple) and len(args) == 5:
+            path, status = args[2], args[4]
+            if status == 404 and path in self.PROBE_PATHS:
+                return False
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_IgnoreDebuggerProbes())
 
 app = FastAPI(title="TorchCode UI Backend")
 

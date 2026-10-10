@@ -18,3 +18,4 @@ labextension/node_modules/
 labextension/torchcode_labext/labextension/
 labextension/tsconfig.tsbuildinfo
 labextension/yarn.lock
+.start.pid
