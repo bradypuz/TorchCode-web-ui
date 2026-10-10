@@ -12,6 +12,7 @@ from torch_judge.tasks import TASKS, get_task
 from torch_judge.web_engine import execute_code
 from api.parser import get_all_templates
 from api.practice import get_store, router as practice_router
+from api.solutions import get_solution
 
 
 class _IgnoreDebuggerProbes(logging.Filter):
@@ -77,6 +78,11 @@ def get_task_details(task_id: str):
         "description": template.get("description", "Description not found."),
         "initial_code": template.get("initial_code", "# Write your code here.")
     }
+
+@app.get("/api/tasks/{task_id}/solution")
+def get_task_solution(task_id: str):
+    return get_solution(task_id)
+
 
 @app.post("/api/submit/{task_id}")
 def submit_code(task_id: str, request: SubmitRequest):

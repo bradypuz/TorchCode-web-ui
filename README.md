@@ -116,6 +116,8 @@ The script creates a Python virtual environment if needed, installs dependencies
 
 Choose a local learner profile, adjust the daily problem count, and click **Practice It!** to open the selected problem in the coding workspace. Submitting code saves the attempt and test results; the dashboard uses these results to prioritize unfinished problems and schedule review of past problems. Each profile keeps its own goal and history, stored locally in SQLite under `data/` and retained across restarts.
 
+The **Solution** button beside each practice button opens a guide with **Solution Code** and **Explanation** tabs. Code comes from the reference notebook; explanations for all 41 problems are pre-generated in [`explanations/`](explanations/README.md), with tensor shapes, implementation walkthroughs, formulas, and the reference's edge cases. The code tab supports copying the implementation, including its imports, back into the editor.
+
 Open the coding workspace once to import any existing browser-saved solved markers. These markers preserve completion status; detailed history starts with recorded submissions. Profiles are local practice identities, with no signup or account authentication.
 
 Press **Ctrl+C** in the launch terminal, or run `./stop.sh`, to stop all three services. If dependencies are already installed, use `SKIP_INSTALL=1 ./start.sh`. Ports 3000, 4000, and 8000 must be available.
