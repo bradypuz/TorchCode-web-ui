@@ -110,9 +110,15 @@ With Python 3.10+ and Node.js 20.9+ (npm) installed, run this from the repositor
 
 The script creates a Python virtual environment if needed, installs API and frontend dependencies, and starts:
 
-- **<http://localhost:4000>** — your daily practice dashboard, with solving history, a daily goal (3 problems by default), and recommended problems to revisit.
+- **<http://localhost:4000>** — your daily practice dashboard.
 - **<http://localhost:3000>** — the coding workspace with an integrated IDE, debugger, and test feedback.
 - **<http://localhost:8000>** — the FastAPI backend shared by both UIs.
+
+On the **localhost:4000** dashboard:
+
+- **Today’s practice:** choose a daily goal (3 problems by default), mixing new lessons in Suggested Study Plan order with timely reviews.
+- **Review lab & Your journey:** revisit tricky problems, explore four weekly paths, and view submission history grouped by problem with test results.
+- **Practice It! & Solution:** open a problem on localhost:3000 or view its solution code and explanations, including interactive examples and a fullscreen option.
 
 To stop all three services, run this from the repository root in another terminal:
 
@@ -121,6 +127,9 @@ To stop all three services, run this from the repository root in another termina
 ```
 
 You can also press **Ctrl+C** in the launch terminal. Ports 3000, 4000, and 8000 must be available. If dependencies are already installed, use `SKIP_INSTALL=1 ./start.sh` to skip installation.
+
+<details>
+<summary>Practice features and saved history</summary>
 
 Choose a local learner profile, adjust the daily problem count, and click **Practice It!** to open the selected problem in the coding workspace. Submitting code saves the attempt and test results; the dashboard uses these results to prioritize unfinished problems and schedule review of past problems. Each profile keeps its own goal and history, stored locally in SQLite under `data/` and retained across restarts.
 
@@ -131,6 +140,8 @@ The **Solution** button beside each practice button opens a guide with **Solutio
 In the coding workspace, **Submission history** shows the current learner's past attempts for the selected problem, including submission times and passed/total test counts. Click an attempt to load its exact code into the editor; **Undo load** restores the previous draft. New submissions save source code locally alongside test results. Older attempts retain their results but show **Code unavailable** because their source code was not recorded.
 
 Open the coding workspace once to import any existing browser-saved solved markers. These markers preserve completion status; detailed history starts with recorded submissions. Profiles are local practice identities, with no signup or account authentication.
+
+</details>
 
 ![TorchCode UI Preview](assets/ui_preview.png)
 
