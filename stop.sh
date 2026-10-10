@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Stop the backend and frontend started by ./start.sh.
+# Stop the API, coding workspace, and dashboard started by ./start.sh.
 #
 # Usage: ./stop.sh
 #
 # First asks the running start.sh to shut down gracefully (via its PID file),
-# then kills anything from this repo still listening on the backend/frontend
+# then kills anything from this repo still listening on the API/workspace/dashboard
 # ports. Processes on those ports that don't belong to this repo are left alone.
 
 set -euo pipefail
@@ -13,6 +13,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PID_FILE="$ROOT_DIR/.start.pid"
 BACKEND_PORT=8000
 FRONTEND_PORT=3000
+DASHBOARD_PORT=4000
 
 # wait_for_exit <pid> <seconds>: returns 0 if the process exited in time.
 wait_for_exit() {
@@ -34,7 +35,7 @@ stopped_any=0
 
 if [[ -f "$PID_FILE" ]]; then
 	pid="$(cat "$PID_FILE")"
-	if kill -0 "$pid" 2>/dev/null; then
+	if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && belongs_to_repo "$pid" && [[ "$(ps -p "$pid" -o command=)" == *start.sh* ]]; then
 		echo "==> Stopping start.sh (pid $pid)..."
 		kill -TERM "$pid"
 		wait_for_exit "$pid" 10 || echo "    start.sh did not exit in time; cleaning up ports directly."
@@ -43,7 +44,7 @@ if [[ -f "$PID_FILE" ]]; then
 	rm -f "$PID_FILE"
 fi
 
-for port in "$BACKEND_PORT" "$FRONTEND_PORT"; do
+for port in "$BACKEND_PORT" "$FRONTEND_PORT" "$DASHBOARD_PORT"; do
 	for pid in $(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true); do
 		kill -0 "$pid" 2>/dev/null || continue  # already exited with its parent
 		if ! belongs_to_repo "$pid"; then

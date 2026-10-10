@@ -11,6 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from torch_judge.tasks import TASKS, get_task
 from torch_judge.web_engine import execute_code
 from api.parser import get_all_templates
+from api.practice import get_store, router as practice_router
 
 
 class _IgnoreDebuggerProbes(logging.Filter):
@@ -31,6 +32,7 @@ class _IgnoreDebuggerProbes(logging.Filter):
 logging.getLogger("uvicorn.access").addFilter(_IgnoreDebuggerProbes())
 
 app = FastAPI(title="TorchCode UI Backend")
+app.include_router(practice_router)
 
 # Allow CORS for local frontend development
 app.add_middleware(
@@ -46,6 +48,8 @@ TEMPLATES = get_all_templates()
 
 class SubmitRequest(BaseModel):
     code: str
+    user_id: str = "local"
+    hint_used: bool = False
 
 @app.get("/api/tasks")
 def list_tasks():
@@ -76,5 +80,10 @@ def get_task_details(task_id: str):
 
 @app.post("/api/submit/{task_id}")
 def submit_code(task_id: str, request: SubmitRequest):
+    if not get_task(task_id):
+        raise HTTPException(status_code=404, detail="Task not found")
+    # Validate profile before executing code so invalid requests have no side effects.
+    get_store().profile(request.user_id)
     result = execute_code(task_id, request.code)
+    get_store().record_attempt(request.user_id, task_id, result, hint_used=request.hint_used)
     return result

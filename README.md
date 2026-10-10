@@ -102,7 +102,25 @@ Open **<http://localhost:8888>** — that's it. Works with both Docker and Podma
 
 ### Option 3 — Standalone Web UI (Next.js + FastAPI)
 
-For a modern, standalone coding experience with an integrated IDE and dual-pane layout:
+Launch the coding workspace and a cheerful daily practice dashboard together:
+
+```bash
+./start.sh
+```
+
+The script creates a Python virtual environment if needed, installs dependencies, and starts:
+
+- **<http://localhost:4000>** — your daily practice dashboard, with solving history, a daily goal (3 problems by default), and recommended problems to revisit.
+- **<http://localhost:3000>** — the coding workspace with an integrated IDE, debugger, and test feedback.
+- **<http://localhost:8000>** — the FastAPI backend shared by both UIs.
+
+Choose a local learner profile, adjust the daily problem count, and click **Practice It!** to open the selected problem in the coding workspace. Submitting code saves the attempt and test results; the dashboard uses these results to prioritize unfinished problems and schedule review of past problems. Each profile keeps its own goal and history, stored locally in SQLite under `data/` and retained across restarts.
+
+Open the coding workspace once to import any existing browser-saved solved markers. These markers preserve completion status; detailed history starts with recorded submissions. Profiles are local practice identities, with no signup or account authentication.
+
+Press **Ctrl+C** in the launch terminal, or run `./stop.sh`, to stop all three services. If dependencies are already installed, use `SKIP_INSTALL=1 ./start.sh`. Ports 3000, 4000, and 8000 must be available.
+
+To start the services individually:
 
 1. **Start Backend (FastAPI):**
    ```bash
@@ -115,7 +133,12 @@ For a modern, standalone coding experience with an integrated IDE and dual-pane 
    npm install
    npm run dev
    ```
-3. Open **<http://localhost:3000>** in your browser.
+3. **Start Dashboard (in another terminal):**
+   ```bash
+   cd web
+   TORCHCODE_DASHBOARD=1 npm run dev -- --port 4000
+   ```
+4. Open **<http://localhost:4000>** to plan your practice, or **<http://localhost:3000>** to code.
 
 ![TorchCode UI Preview](assets/ui_preview.png)
 

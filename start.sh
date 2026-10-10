@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the standalone Web UI (README "Option 3"): FastAPI backend + Next.js frontend.
+# Start TorchCode's API, coding workspace, and daily practice dashboard.
 #
 # Usage: ./start.sh
 # Env overrides:
@@ -19,6 +19,7 @@ VENV_DIR="$ROOT_DIR/.venv"
 PID_FILE="$ROOT_DIR/.start.pid"
 BACKEND_PORT=8000
 FRONTEND_PORT=3000
+DASHBOARD_PORT=4000
 
 if [[ -z "${PYTHON:-}" ]]; then
 	if [[ ! -x "$VENV_DIR/bin/python" ]]; then
@@ -37,7 +38,7 @@ port_in_use() {
 	lsof -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
 }
 
-for port in "$BACKEND_PORT" "$FRONTEND_PORT"; do
+for port in "$BACKEND_PORT" "$FRONTEND_PORT" "$DASHBOARD_PORT"; do
 	if port_in_use "$port"; then
 		echo "Error: port $port is already in use. Stop whatever is using it and retry." >&2
 		exit 1
@@ -56,6 +57,7 @@ fi
 
 BACKEND_PID=""
 FRONTEND_PID=""
+DASHBOARD_PID=""
 
 cleanup() {
 	trap - INT TERM EXIT
@@ -63,6 +65,7 @@ cleanup() {
 	echo "==> Shutting down..."
 	# Kill whole process groups so child processes (uvicorn reloader worker,
 	# next dev server spawned by npm) go down too.
+	[[ -n "$DASHBOARD_PID" ]] && kill -- -"$DASHBOARD_PID" 2>/dev/null || true
 	[[ -n "$FRONTEND_PID" ]] && kill -- -"$FRONTEND_PID" 2>/dev/null || true
 	[[ -n "$BACKEND_PID" ]] && kill -- -"$BACKEND_PID" 2>/dev/null || true
 	wait 2>/dev/null || true
@@ -79,12 +82,19 @@ echo "==> Starting backend on http://localhost:$BACKEND_PORT ..."
 BACKEND_PID=$!
 
 echo "==> Starting frontend on http://localhost:$FRONTEND_PORT ..."
-(cd web && exec npm run dev -- --port "$FRONTEND_PORT") &
+(cd web && export TORCHCODE_DASHBOARD=0 && exec npm run dev -- --port "$FRONTEND_PORT") &
 FRONTEND_PID=$!
 
-echo "==> TorchCode is starting. Open http://localhost:$FRONTEND_PORT (Ctrl+C to stop)"
+echo "==> Starting practice dashboard on http://localhost:$DASHBOARD_PORT ..."
+(cd web && export TORCHCODE_DASHBOARD=1 && exec npm run dev -- --port "$DASHBOARD_PORT") &
+DASHBOARD_PID=$!
 
-# Exit (and clean up the other process) as soon as either one dies.
-while kill -0 "$BACKEND_PID" 2>/dev/null && kill -0 "$FRONTEND_PID" 2>/dev/null; do
+echo "==> TorchCode is starting:"
+echo "    Daily practice: http://localhost:$DASHBOARD_PORT"
+echo "    Coding workspace: http://localhost:$FRONTEND_PORT"
+echo "    Ctrl+C or ./stop.sh stops all three services."
+
+# Exit (and clean up the other services) as soon as any process dies.
+while kill -0 "$BACKEND_PID" 2>/dev/null && kill -0 "$FRONTEND_PID" 2>/dev/null && kill -0 "$DASHBOARD_PID" 2>/dev/null; do
 	sleep 1
 done
