@@ -66,8 +66,8 @@ def get_solution(task_id: str, root: Path = ROOT) -> dict:
     explanation_path = root / "explanations" / (path.stem.removesuffix("_solution") + ".md")
     try:
         code = parse_solution_code(path)
-        explanation = explanation_path.read_text(encoding="utf-8").strip()
-        if not explanation:
+        explanation = explanation_path.read_bytes().decode("utf-8")
+        if not explanation.strip():
             raise ValueError("Explanation is empty")
     except FileNotFoundError:
         raise HTTPException(status_code=503, detail="This explanation is not available yet")

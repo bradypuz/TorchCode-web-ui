@@ -1,48 +1,88 @@
-# Byte-Pair Encoding
+This class implements a small **Byte Pair Encoding (BPE) tokenizer**. It learns which adjacent characters or character groups frequently occur together, then treats those groups as single tokens.
 
-This is a simple **Byte Pair Encoding (BPE) tokenizer**. It starts with individual characters and learns which neighboring tokens frequently occur together, then combines them into larger tokens.
+Despite the name “Byte Pair Encoding,” this implementation starts with **Python characters**, not raw bytes.
+
+## 1. The basic idea
+
+Suppose a word initially looks like this:
+
+```text
+lower → ['l', 'o', 'w', 'e', 'r', '</w>']
+```
+
+BPE repeatedly merges common neighboring symbols:
+
+```text
+'l' + 'o'   → 'lo'
+'lo' + 'w'  → 'low'
+```
+
+The word can then be represented as:
+
+```text
+['low', 'e', 'r', '</w>']
+```
+
+The special symbol `'</w>'` marks the **end of a word**. It can also become part of a merged token, such as `'low</w>'`.
+
+The class has two main operations:
+
+- **`train()`**: learn which pairs to merge, and in what order.
+- **`encode()`**: apply those learned merges to new text.
+
+---
+
+## 2. Initialization
+
+```python
+def __init__(self):
+    self.merges = []
+```
+
+`self.merges` stores the learned merge rules in order.
 
 For example:
 
-```text
-l o w </w>
-→ lo w </w>
-→ low </w>
-→ low</w>
+```python
+[
+    ('l', 'o'),
+    ('lo', 'w'),
+    ('low', '</w>')
+]
 ```
 
-`</w>` marks the end of a word.
+These rules mean:
 
-## `__init__`: store the learned merges
+1. Merge adjacent `'l'` and `'o'` into `'lo'`.
+2. Merge adjacent `'lo'` and `'w'` into `'low'`.
+3. Merge adjacent `'low'` and `'</w>'` into `'low</w>'`.
+
+**The order matters**, because a later rule may depend on a token created by an earlier rule.
+
+---
+
+## 3. Training: `train(corpus, num_merges)`
+
+Here, `corpus` is expected to be an iterable of **individual words**, such as:
 
 ```python
-self.merges = []
+corpus = ['low', 'low', 'lower']
 ```
 
-This list records pairs in the order they were learned:
+`num_merges` is the maximum number of merge rules to learn.
+
+### Step A: Count words in their initial character form
 
 ```python
-[('l', 'o'), ('lo', 'w'), ('low', '</w>')]
+vocab = {}
+for word in corpus:
+    symbols = tuple(word) + ('</w>',)
+    vocab[symbols] = vocab.get(symbols, 0) + 1
 ```
 
-The order matters because later merges can depend on earlier ones.
+Each word becomes a tuple of characters followed by the end-of-word marker.
 
-## `train`: learn frequent pairs
-
-**1. Build a vocabulary of words and their frequencies.**
-
-```python
-symbols = tuple(word) + ('</w>',)
-vocab[symbols] = vocab.get(symbols, 0) + 1
-```
-
-For this corpus:
-
-```python
-["low", "low", "lower"]
-```
-
-the initial vocabulary is:
+For the example above, `vocab` becomes:
 
 ```python
 {
@@ -51,78 +91,203 @@ the initial vocabulary is:
 }
 ```
 
-Repeated words count more heavily during training.
+The numbers are word frequencies.
 
-**2. Count every adjacent pair.**
+Tuples are used because they can serve as dictionary keys; lists cannot.
+
+### Step B: Count every adjacent pair
 
 ```python
-pairs[pair] = pairs.get(pair, 0) + freq
+pairs = {}
+for word, freq in vocab.items():
+    for i in range(len(word) - 1):
+        pair = (word[i], word[i + 1])
+        pairs[pair] = pairs.get(pair, 0) + freq
 ```
 
-Here, `('l', 'o')` appears three times overall: twice in `"low"` and once in `"lower"`.
+For each word, the code examines neighboring symbols.
 
-**3. Choose the most frequent pair.**
+In our example:
+
+| Pair | Total count |
+|---|---:|
+| `('l', 'o')` | 3 |
+| `('o', 'w')` | 3 |
+| `('w', '</w>')` | 2 |
+| `('w', 'e')` | 1 |
+| `('e', 'r')` | 1 |
+| `('r', '</w>')` | 1 |
+
+The counts are **weighted by word frequency**. Because `'low'` appears twice, each pair inside it contributes twice.
+
+### Step C: Choose the most frequent pair
 
 ```python
+if not pairs:
+    break
 best = max(pairs, key=pairs.get)
 self.merges.append(best)
 ```
 
-If pairs tie, Python chooses the first one encountered.
+If there are no adjacent pairs left, training stops.
 
-**4. Replace that pair everywhere in the vocabulary.**
+Otherwise, the most frequent pair is selected and recorded.
+
+Here, `('l', 'o')` and `('o', 'w')` tie. Python’s `max()` selects the first encountered maximum, so this example chooses:
 
 ```python
-new_word.append(word[i] + word[i + 1])
-i += 2
+('l', 'o')
 ```
 
-For example, merging `('l', 'o')` changes:
+### Step D: Merge that pair throughout the vocabulary
+
+```python
+new_vocab = {}
+for word, freq in vocab.items():
+    new_word = []
+    i = 0
+    while i < len(word):
+        if i < len(word) - 1 and (word[i], word[i + 1]) == best:
+            new_word.append(word[i] + word[i + 1])
+            i += 2
+        else:
+            new_word.append(word[i])
+            i += 1
+    new_vocab[tuple(new_word)] = freq
+vocab = new_vocab
+```
+
+The code scans each word from left to right:
+
+- If the next two symbols match the chosen pair, concatenate them and advance by **two** positions.
+- Otherwise, copy the current symbol and advance by **one** position.
+
+After merging `('l', 'o')`:
 
 ```text
 ('l', 'o', 'w', '</w>')
 → ('lo', 'w', '</w>')
+
+('l', 'o', 'w', 'e', 'r', '</w>')
+→ ('lo', 'w', 'e', 'r', '</w>')
 ```
 
-`i += 2` skips both consumed symbols. Otherwise, the code copies one symbol and advances by one.
+It then repeats the pair-counting and merging process, using the **updated** vocabulary.
 
-This process repeats up to `num_merges` times, stopping early if no adjacent pairs remain.
-
-## `encode`: apply the learned merges
-
-Encoding begins by splitting the text into words, then splitting each word into characters:
+With three merges, our example learns:
 
 ```python
-symbols = list(word) + ['</w>']
+[
+    ('l', 'o'),
+    ('lo', 'w'),
+    ('low', '</w>')
+]
 ```
 
-It applies every learned merge **in training order**:
+Calling `train()` again replaces the previous rules because it resets `self.merges`.
+
+---
+
+## 4. Encoding: `encode(text)`
+
+Encoding uses the learned rules—it does **not** calculate new pair frequencies.
+
+### Step A: Split the text into words
+
+```python
+all_tokens = []
+for word in text.split():
+    symbols = list(word) + ['</w>']
+```
+
+For example:
+
+```text
+"low lower"
+```
+
+is processed as two words:
+
+```python
+['l', 'o', 'w', '</w>']
+['l', 'o', 'w', 'e', 'r', '</w>']
+```
+
+### Step B: Apply each merge rule in training order
 
 ```python
 for a, b in self.merges:
+    i = 0
+    while i < len(symbols) - 1:
+        if symbols[i] == a and symbols[i + 1] == b:
+            symbols = symbols[:i] + [a + b] + symbols[i + 2:]
+        else:
+            i += 1
 ```
 
-Whenever neighboring symbols match a learned pair, it replaces them with their concatenation:
+This expression:
 
 ```python
-symbols = symbols[:i] + [a + b] + symbols[i + 2:]
+symbols[:i] + [a + b] + symbols[i + 2:]
 ```
 
-Finally, it puts all words’ tokens into one flat list.
+rebuilds the list as:
 
-## Complete example
+```text
+symbols before the pair + merged token + symbols after the pair
+```
+
+For `'low'`, the learned rules produce:
+
+```text
+['l', 'o', 'w', '</w>']
+→ ['lo', 'w', '</w>']
+→ ['low', '</w>']
+→ ['low</w>']
+```
+
+For `'lower'`:
+
+```text
+['l', 'o', 'w', 'e', 'r', '</w>']
+→ ['lo', 'w', 'e', 'r', '</w>']
+→ ['low', 'e', 'r', '</w>']
+```
+
+The last rule, `('low', '</w>')`, does not apply to `'lower'`: `'low'` is followed by `'e'`, not the end-of-word marker.
+
+### Step C: Collect the tokens
+
+```python
+all_tokens.extend(symbols)
+return all_tokens
+```
+
+Tokens from every word are added to one flat list.
+
+---
+
+## 5. Complete example
 
 ```python
 bpe = SimpleBPE()
-bpe.train(["low", "low", "lower"], num_merges=3)
+
+bpe.train(['low', 'low', 'lower'], num_merges=3)
 
 print(bpe.merges)
 # [('l', 'o'), ('lo', 'w'), ('low', '</w>')]
 
-print(bpe.encode("low lower"))
+print(bpe.encode('low lower'))
 # ['low</w>', 'low', 'e', 'r', '</w>']
 ```
 
-The frequent word `"low"` becomes a single token. `"lower"` shares the learned `"low"` token, but its remaining characters stay separate.
+## Important limitations
 
-A few details: `train()` expects an iterable of **words**, encoding discards original whitespace through `split()`, and this implementation operates on **characters**, despite the “Byte Pair Encoding” name.
+- **Training expects words.** Passing a raw string directly to `train()` would iterate over its characters, not its words.
+- **Whitespace is not preserved.** `text.split()` removes leading/trailing whitespace and collapses separators.
+- **No merges cross word boundaries.** Each word is processed separately.
+- **Output tokens are strings, not integer token IDs.**
+- **Unseen words still work:** their characters are merged wherever existing rules apply; the remaining characters stay separate.
+- **This is an educational implementation:** it lacks the efficiency and additional features of production tokenizers.
+
+**In short:** training learns frequent adjacent-symbol combinations; encoding reuses those combinations to turn text into character or subword tokens.

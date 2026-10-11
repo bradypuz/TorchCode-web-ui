@@ -1,59 +1,138 @@
-# Causal Self-Attention
+This function implements **causal scaled dot-product attention**: each position combines information from **itself and earlier positions**, but cannot use information from later positions. This is the attention pattern used in autoregressive models, where future tokens must remain hidden.
 
-This computes **causal attention**: each token combines information from itself and earlier tokens, while ignoring future tokens. This is used in models that generate text one token at a time.
+## 1. Inputs and shapes
 
-The inputs are:
+The function expects three batched tensors:
 
-- **Q (queries):** what each token is looking for.
-- **K (keys):** what each token offers for matching.
-- **V (values):** the information each token contributes.
+| Tensor | Meaning | Shape |
+|---|---|---|
+| `Q` — queries | What each position is looking for | `(B, S, d_k)` |
+| `K` — keys | What each position can be matched against | `(B, S, d_k)` |
+| `V` — values | The information each position contributes | `(B, S, d_v)` |
 
-Assume `Q` and `K` have shape `(batch, sequence_length, d_k)`, and `V` has shape `(batch, sequence_length, d_v)`.
+Here:
+- `B` is the batch size.
+- `S` is the sequence length.
+- `d_k` is the query/key vector dimension.
+- `d_v` is the value vector dimension; it can differ from `d_k`.
 
-1. **Calculate attention scores**
-   ```python
-   d_k = K.size(-1)
-   scores = torch.bmm(Q, K.transpose(1, 2)) / math.sqrt(d_k)
-   ```
-   `torch.bmm` performs matrix multiplication separately for each batch. Each query is compared with every key using a dot product.
+Usually, `Q`, `K`, and `V` come from learned transformations of the input embeddings. This function assumes they have already been computed.
 
-   `scores` has shape `(batch, sequence_length, sequence_length)`. Entry `[b, i, j]` measures how strongly token `i` matches token `j`. Dividing by `√d_k` keeps scores from growing too large as the vector dimension increases.
+## 2. Compute attention scores
 
-2. **Identify future tokens**
-   ```python
-   S = scores.size(-1)
-   mask = torch.triu(torch.ones(S, S, device=scores.device, dtype=torch.bool), diagonal=1)
-   ```
-   The mask is `True` above the main diagonal:
-   ```text
-   False  True   True
-   False  False  True
-   False  False  False
-   ```
-   Rows represent querying tokens; columns represent tokens they might attend to.
-
-3. **Block attention to the future**
-   ```python
-   scores = scores.masked_fill(mask.unsqueeze(0), float('-inf'))
-   ```
-   Future-token scores become `−∞`. `unsqueeze(0)` lets the same mask apply to every batch.
-
-4. **Convert scores into weights**
-   ```python
-   weights = torch.softmax(scores, dim=-1)
-   ```
-   Each row becomes weights that sum to 1. Masked positions receive weight **0**, because `exp(−∞) = 0`.
-
-5. **Combine the values**
-   ```python
-   return torch.bmm(weights, V)
-   ```
-   Each output token is a weighted sum of the allowed value vectors. The output shape is `(batch, sequence_length, d_v)`.
-
-For example, the third token can attend to tokens **1, 2, and 3**, but cannot attend to token **4** or anything after it.
-
-## Try it interactively
-
-```torchcode-visual
-attention-mask
+```python
+d_k = K.size(-1)
+scores = torch.bmm(Q, K.transpose(1, 2)) / math.sqrt(d_k)
 ```
+
+`K.size(-1)` gets the key vector dimension.
+
+`K.transpose(1, 2)` changes its shape from `(B, S, d_k)` to `(B, d_k, S)`. Then `torch.bmm` performs matrix multiplication separately for each batch item:
+
+```text
+(B, S, d_k) × (B, d_k, S) → (B, S, S)
+```
+
+Each score measures how well a query at position `i` matches a key at position `j`:
+
+\[
+\text{scores}_{i,j}=\frac{Q_i\cdot K_j}{\sqrt{d_k}}
+\]
+
+**Rows represent query positions; columns represent key positions.**
+
+Dividing by \(\sqrt{d_k}\) keeps dot products from growing too large as the vector dimension increases. This helps prevent softmax from becoming excessively peaked.
+
+## 3. Create a mask for future positions
+
+```python
+S = scores.size(-1)
+mask = torch.triu(
+    torch.ones(S, S, device=scores.device, dtype=torch.bool),
+    diagonal=1
+)
+```
+
+This creates a Boolean matrix whose entries are `True` **above the main diagonal**.
+
+For a sequence of length 4:
+
+```text
+         Key position
+          0      1      2      3
+Query 0  False  True   True   True
+      1  False  False  True   True
+      2  False  False  False  True
+      3  False  False  False  False
+```
+
+`True` means “block this connection.”
+
+- Position 0 can attend only to position 0.
+- Position 1 can attend to positions 0 and 1.
+- Position 2 can attend to positions 0, 1, and 2.
+- And so on.
+
+`diagonal=1` leaves the main diagonal unmasked, so each position can attend to itself.
+
+## 4. Set forbidden scores to negative infinity
+
+```python
+scores = scores.masked_fill(mask.unsqueeze(0), float('-inf'))
+```
+
+`mask.unsqueeze(0)` changes the mask shape from `(S, S)` to `(1, S, S)`, allowing the same mask to broadcast across all batch items.
+
+Every future-position score becomes `-inf`. In the next softmax operation, those entries receive zero weight because:
+
+\[
+e^{-\infty}=0
+\]
+
+## 5. Convert scores into attention weights
+
+```python
+weights = torch.softmax(scores, dim=-1)
+```
+
+Softmax runs across the key positions for each query.
+
+For each query position:
+- Allowed positions receive nonnegative weights that sum to 1.
+- Future positions receive weight 0.
+
+For example, position 2 might get:
+
+```text
+[0.2, 0.3, 0.5, 0.0]
+```
+
+It assigns different importance to positions 0–2 and ignores position 3.
+
+## 6. Combine the value vectors
+
+```python
+return torch.bmm(weights, V)
+```
+
+The attention weights are used to compute a weighted sum of the value vectors:
+
+\[
+\text{output}_i=\sum_{j=0}^{i}\text{weights}_{i,j}V_j
+\]
+
+The output shape is:
+
+```text
+(B, S, S) × (B, S, d_v) → (B, S, d_v)
+```
+
+So, using the example weights above:
+
+```python
+output_at_position_2 = 0.2 * V[0] + 0.3 * V[1] + 0.5 * V[2]
+```
+
+Here, the indexing illustrates positions within one batch item.
+
+**In short:** `Q` and `K` decide **which earlier positions matter**, the causal mask prevents looking into the future, and `V` provides the information to combine. This function computes one batched attention operation; it does not include multi-head splitting, padding masks, or dropout.

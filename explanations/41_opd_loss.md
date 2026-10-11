@@ -1,102 +1,283 @@
-# On-Policy Distillation Reverse-KL Loss
+This function computes a **distillation loss that encourages a student model’s probability distribution to match one or more teacher models**.
 
-This function computes a **training loss that encourages a student model’s token probabilities to match one or more teacher models**. It compares their full vocabulary distributions, combines the teachers’ losses, and averages across the selected token positions.
+It uses **reverse KL divergence**:
 
-The central calculation is **reverse KL divergence**:
-
-
-
-$$
-
+\[
 D_{\mathrm{KL}}(p_{\text{student}}\|p_{\text{teacher}})
+\]
+
+The student receives gradients; the teacher logits are treated as fixed targets.
+
+## 1. What the inputs represent
+
+For a language model, a typical shape is:
+
+```python
+student_logits.shape = (batch_size, sequence_length, vocabulary_size)
+```
+
+Each token position has a vector of scores over the vocabulary. These are **logits**, not probabilities.
+
+The teacher can provide either:
+
+```python
+# One teacher
+teacher_logits.shape = (batch_size, sequence_length, vocabulary_size)
+
+# Multiple teachers
+teacher_logits.shape = (
+    num_teachers, batch_size, sequence_length, vocabulary_size
+)
+```
+
+The `...` notation in the docstring means the function also supports other leading dimensions.
+
+The other inputs are:
+
+- **`teacher_weights`**: How much each teacher contributes.
+- **`mask`**: Which token positions contribute to the final loss.
+- **`temperature`**: How sharp or smooth the student and teacher distributions are.
+
+---
+
+## 2. Give teacher logits a consistent shape
+
+```python
+if teacher_logits.dim() == student_logits.dim():
+    teacher_logits = teacher_logits.unsqueeze(0)
+elif teacher_logits.dim() != student_logits.dim() + 1:
+    raise ValueError(...)
+```
+
+If there is only one teacher, the code adds a leading dimension of size `1`.
+
+For example:
+
+```text
+Before: (B, L, V)
+After:  (1, B, L, V)
+```
+
+Now both single-teacher and multi-teacher cases can use the same code, with the first dimension always indexing teachers.
+
+This checks the **number of dimensions**, but does not fully validate that all dimension sizes match.
+
+## 3. Stop gradients from flowing into the teacher
+
+```python
+teacher_logits = teacher_logits.detach()
+t = float(temperature)
+```
+
+`.detach()` removes the teacher logits from the gradient computation graph.
+
+When you call:
+
+```python
+loss.backward()
+```
+
+the loss can update the student, but it will not backpropagate through these teacher logits.
+
+Converting the temperature to a Python `float` also means the temperature is treated as a fixed value, not a trainable tensor.
+
+## 4. Convert logits into distributions
+
+```python
+student_logp = F.log_softmax(student_logits / t, dim=-1)
+student_prob = student_logp.exp()
+teacher_logp = F.log_softmax(teacher_logits / t, dim=-1)
+```
+
+For student logits \(s_v\), this computes:
+
+\[
+p_s(v)=\frac{\exp(s_v/t)}{\sum_u \exp(s_u/t)}
+\]
+
+and similarly for each teacher.
+
+The resulting tensors contain:
+
+| Variable | Meaning |
+|---|---|
+| `student_logp` | \(\log p_s(v)\) |
+| `student_prob` | \(p_s(v)\) |
+| `teacher_logp` | \(\log p_{t,j}(v)\) for teacher \(j\) |
+
+`F.log_softmax` is a numerically stable way to compute log probabilities directly.
+
+### What temperature does
+
+- **`t = 1`**: Ordinary softmax.
+- **`t > 1`**: Smoother distributions; lower-ranked vocabulary items get more probability.
+- **`0 < t < 1`**: Sharper distributions; high-scoring items dominate more strongly.
+
+Both student and teacher use the same temperature.
+
+## 5. Compute reverse KL for every teacher and token
+
+```python
+per_teacher_kl = (
+    student_prob.unsqueeze(0) *
+    (student_logp.unsqueeze(0) - teacher_logp)
+).sum(dim=-1)
+```
+
+This is the core calculation:
+
+\[
+D_{\mathrm{KL}}(p_s\|p_{t,j})
 =
-\sum_{v=1}^{V}
-p_{\text{student}}(v)
-\left[\log p_{\text{student}}(v)-\log p_{\text{teacher}}(v)\right]
+\sum_v p_s(v)
+\left[\log p_s(v)-\log p_{t,j}(v)\right]
+\]
 
-$$
+The sum is over vocabulary items.
 
+For the language-model example:
 
+```text
+student_prob.unsqueeze(0): (1, B, L, V)
+teacher_logp:              (T, B, L, V)
+per_teacher_kl:            (T, B, L)
+```
 
-Here, $V$ is the vocabulary size. Let’s follow the code.
+Broadcasting compares the same student distribution against every teacher.
 
-1. **Give every teacher tensor a teacher dimension.**
+### Why “reverse” KL?
 
-   Suppose the student logits have shape `(B, L, V)`:
+In distillation, the more common direction is:
 
-   - `B`: batch size
-   - `L`: sequence length
-   - `V`: vocabulary size
+\[
+D_{\mathrm{KL}}(p_{\text{teacher}}\|p_{\text{student}})
+\]
 
-   A single teacher also has shape `(B, L, V)`. Calling `unsqueeze(0)` changes it to `(1, B, L, V)`. Multiple teachers already have shape `(T, B, L, V)`.
+This code uses the opposite direction, so the expectation is weighted by **student probabilities**.
 
-   This lets the remaining code handle both cases identically.
+Intuitively, it especially penalizes the student for putting probability on outputs the teacher considers unlikely. Reverse KL is often described as **mode-seeking**: when the teacher has several plausible modes, the student may concentrate on a subset rather than cover them all.
 
-2. **Stop gradients flowing into the teachers.**
+Importantly, `student_prob` is **not detached**. Gradients flow through both the student probabilities and student log probabilities.
 
-   ```python
-   teacher_logits = teacher_logits.detach()
-   ```
+## 6. Combine multiple teachers
 
-   The teachers provide fixed targets for this loss. Backpropagation still flows through the student logits, but this teacher branch is disconnected from autograd. [PyTorch documentation](https://docs.pytorch.org/docs/2.14/generated/torch.Tensor.detach.html)
+First, the function chooses teacher weights:
 
-3. **Convert logits into probability distributions.**
+```python
+if teacher_weights is None:
+    weights = torch.full(
+        (num_teachers,),
+        1.0 / num_teachers,
+        ...
+    )
+else:
+    weights = teacher_weights.to(...)
+    weights = weights / weights.sum()
+```
 
-   ```python
-   student_logp = F.log_softmax(student_logits / t, dim=-1)
-   student_prob = student_logp.exp()
-   teacher_logp = F.log_softmax(teacher_logits / t, dim=-1)
-   ```
+Without explicit weights, every teacher contributes equally.
 
-   Logits are raw scores. Softmax turns them into probabilities that sum to one across the vocabulary; `log_softmax` directly computes their logarithms using a numerically stable formulation. [PyTorch documentation](https://docs.pytorch.org/docs/2.14/generated/torch.nn.functional.log_softmax.html)
+If you pass:
 
-   Temperature controls how concentrated the probabilities are:
+```python
+teacher_weights = torch.tensor([2.0, 1.0])
+```
 
-   - `t = 1`: ordinary softmax.
-   - `t > 1`: softer, more evenly spread probabilities.
-   - `0 < t < 1`: sharper probabilities.
+the normalized weights become:
 
-4. **Compute reverse KL for every teacher and token position.**
+```text
+[2/3, 1/3]
+```
 
-   ```python
-   per_teacher_kl = (
-       student_prob.unsqueeze(0)
-       * (student_logp.unsqueeze(0) - teacher_logp)
-   ).sum(dim=-1)
-   ```
+Then:
 
-   This implements the equation above. `unsqueeze(0)` lets the student distribution broadcast across all teachers. Summing over `dim=-1` removes the vocabulary dimension, producing shape `(T, B, L)`.
+```python
+view_shape = (num_teachers,) + (1,) * (per_teacher_kl.dim() - 1)
+per_token_kl = (weights.view(view_shape) * per_teacher_kl).sum(dim=0)
+```
 
-   The **student probabilities weight the comparison**. Consequently, assigning substantial student probability to a token the teacher considers very unlikely incurs a strong penalty. For one teacher, identical distributions give KL zero.
+reshapes the weights for broadcasting and computes:
 
-5. **Combine the teachers’ losses.**
+\[
+\ell_i=\sum_j w_j D_{\mathrm{KL}}(p_{s,i}\|p_{t,j,i})
+\]
 
-   Without supplied weights, all teachers contribute equally. Otherwise:
+For `(T, B, L)` divergences, weights are reshaped to `(T, 1, 1)`. The resulting `per_token_kl` has shape `(B, L)`.
 
-   ```python
-   weights = weights / weights.sum()
-   ```
+**A subtle distinction:** this averages the teachers’ **KL losses**, not their probability distributions. It is not the same as first computing an arithmetic mixture of teacher probabilities and then taking KL against that mixture. For valid normalized weights, its student-dependent part is equivalent to matching a normalized **weighted geometric mean** of the teacher distributions.
 
-   For example, `[2, 1]` becomes `[2/3, 1/3]`.
+## 7. Average over included token positions
 
-   `weights.view(view_shape)` reshapes these weights to `(T, 1, 1)` in this example, so each teacher’s weight applies at every position. Summing across teachers produces `per_token_kl` with shape `(B, L)`.
+With a mask:
 
-   This computes a **weighted average of individual KL divergences**. Computing KL against an averaged teacher probability distribution would generally give a different result.
+```python
+mask = mask.to(dtype=per_token_kl.dtype, device=per_token_kl.device)
+loss = (per_token_kl * mask).sum() / mask.sum().clamp_min(1.0)
+```
 
-6. **Average the selected positions and scale the loss.**
+A binary mask such as:
 
-   With a binary mask:
+```text
+[1, 1, 0, 0]
+```
 
-   ```python
-   loss = (per_token_kl * mask).sum() / mask.sum().clamp_min(1.0)
-   ```
+means “include the first two positions, ignore the last two.”
 
-   Positions marked `1` contribute; positions marked `0`, such as padding, are ignored. The denominator counts included positions. Clamping prevents division by zero; an all-zero mask returns zero when the per-token values are finite.
+The calculation is:
 
-   Without a mask, `.mean()` averages every position.
+\[
+\text{loss}
+=
+\frac{\sum_i m_i\ell_i}
+{\max(\sum_i m_i,1)}
+\]
 
-   Finally, `t ** 2` applies the conventional distillation scaling intended to compensate for smaller gradients at higher temperatures. It does **not** make the loss or gradients exactly temperature-independent. [Distillation paper](https://arxiv.org/html/1503.02531v1)
+This is useful for excluding padding tokens or, when desired, prompt tokens.
 
-One subtlety: **“on-policy” depends on where the inputs came from.** The surrounding training loop must generate sequences using the student and evaluate both models on those same prefixes. This function computes the distribution loss; it does not perform that generation. [On-policy distillation paper](https://arxiv.org/abs/2306.13649)
+The denominator clamp prevents division by zero. If every mask entry is zero and the per-token losses are finite, the result is zero.
 
-The code assumes a positive temperature, matching token positions and vocabulary, and nonnegative teacher weights with a positive sum; it does not validate all those conditions.
+Without a mask:
+
+```python
+loss = per_token_kl.mean()
+```
+
+all positions contribute equally.
+
+## 8. Apply temperature scaling
+
+```python
+return loss * (t ** 2)
+```
+
+Multiplying by \(t^2\) is a conventional distillation adjustment intended to compensate for changes in gradient scale introduced by temperature.
+
+It does **not** make different temperatures produce exactly the same loss or gradients.
+
+## Overall formula
+
+With a binary mask, the function computes:
+
+\[
+\boxed{
+L=t^2
+\frac{
+\sum_i m_i
+\sum_j w_j
+\sum_v p_{s,i}(v)
+\log\frac{p_{s,i}(v)}{p_{t,j,i}(v)}
+}{
+\max(\sum_i m_i,1)
+}
+}
+\]
+
+In plain English:
+
+> At each included token position, compare the student distribution with every teacher using reverse KL, combine the comparisons using teacher weights, average across positions, and apply temperature scaling.
+
+### Two practical caveats
+
+1. **Inputs need validation.** Temperature should be positive; teacher weights should have shape `(T,)`, be nonnegative, and have a positive sum. The code does not enforce these conditions.
+
+2. **“On-policy” depends on the surrounding training loop.** This function does not generate student samples. It is on-policy distillation only if the logits are evaluated on contexts or trajectories generated by the current student policy. By itself, it is a reverse-KL distillation loss.

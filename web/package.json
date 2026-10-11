@@ -6,13 +6,16 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:explanation": "node --experimental-strip-types --test tests/explanation-markdown.test.mjs",
+    "test:journey": "node --experimental-strip-types --test tests/journey-progress.test.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "allotment": "^1.20.5",
     "katex": "^0.16.45",
     "lucide-react": "^1.8.0",
+    "mdast-util-from-markdown": "^2.0.3",
     "mermaid": "^12.1.0",
     "next": "16.2.3",
     "react": "19.2.4",

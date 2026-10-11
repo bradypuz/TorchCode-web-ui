@@ -1,48 +1,81 @@
-# KV Cache Attention
+This implements **multi-head causal self-attention with a key/value (KV) cache**—the mechanism commonly used to make autoregressive generation more efficient.
 
-This implements **causal multi-head self-attention with a key/value (KV) cache**. Each new token can attend to earlier tokens and itself. The cache stores earlier keys and values so they don’t need to be recomputed on every generation step.
+The central idea is:
 
-**The input and dimensions**
+> Compute queries, keys, and values for the **new tokens**, reuse the keys and values from **previous tokens**, and prevent each new token from attending to future tokens.
+
+## 1. What goes in and comes out?
 
 ```python
-x.shape == [B, S_new, d_model]
+out, new_cache = attention(x, cache)
 ```
 
-- `B`: batch size.
-- `S_new`: number of tokens being processed in this call.
-- `d_model`: size of each token’s representation.
-- `num_heads`: number of attention heads.
-- `d_k = d_model // num_heads`: size of each head.
+- **`x`**: embeddings or hidden states for the new tokens, shaped **`[B, S_new, d_model]`**.
+- **`cache`**: optionally, a tuple `(past_keys, past_values)` from earlier calls.
+- **`out`**: attention outputs for only the new tokens, shaped **`[B, S_new, d_model]`**.
+- **`new_cache`**: keys and values for all tokens seen so far, including the new ones.
 
-For example, with `d_model=512` and `num_heads=8`, each head uses 64 dimensions. This implementation requires `d_model` to be divisible by `num_heads`.
+Here:
 
-**Creating queries, keys, and values**
+| Symbol | Meaning |
+|---|---|
+| `B` | Batch size |
+| `S_new` | Number of tokens supplied in the current call |
+| `S_past` | Number of previously cached tokens |
+| `S_total` | `S_past + S_new` |
+| `num_heads` | Number of attention heads |
+| `d_k` | Dimension of each head: `d_model // num_heads` |
 
-The three learned linear layers create different representations of each token:
+For example, if `d_model = 512` and `num_heads = 8`, each head operates on 64-dimensional vectors.
+
+---
+
+## 2. Initialization: learn the projections
+
+```python
+self.num_heads = num_heads
+self.d_k = d_model // num_heads
+self.W_q = nn.Linear(d_model, d_model)
+self.W_k = nn.Linear(d_model, d_model)
+self.W_v = nn.Linear(d_model, d_model)
+self.W_o = nn.Linear(d_model, d_model)
+```
+
+Each token’s input vector is projected into three different representations:
 
 - **Query (`q`)**: what information this token is looking for.
-- **Key (`k`)**: what other tokens can match against.
-- **Value (`v`)**: the information contributed when a token receives attention.
+- **Key (`k`)**: what information this token can be matched against.
+- **Value (`v`)**: the information contributed if this token receives attention.
 
-Each projection initially has shape `[B, S_new, d_model]`. This operation splits it into heads:
+`W_o` is the output projection applied after combining the attention heads.
+
+These are trainable linear layers. The implementation assumes that **`d_model` is divisible by `num_heads`**; otherwise, the later reshaping fails.
+
+## 3. Project the new tokens and split them into heads
 
 ```python
-.view(B, S_new, self.num_heads, self.d_k).transpose(1, 2)
+B, S_new, _ = x.shape
+
+q = self.W_q(x).view(B, S_new, self.num_heads, self.d_k).transpose(1, 2)
+k = self.W_k(x).view(B, S_new, self.num_heads, self.d_k).transpose(1, 2)
+v = self.W_v(x).view(B, S_new, self.num_heads, self.d_k).transpose(1, 2)
 ```
 
-The shape changes as follows:
+Each projection follows this shape transformation:
 
 ```text
 [B, S_new, d_model]
-          ↓ split into heads
+          ↓ split the feature dimension into heads
 [B, S_new, num_heads, d_k]
-          ↓ swap sequence and head dimensions
+          ↓ transpose sequence and head dimensions
 [B, num_heads, S_new, d_k]
 ```
 
-Each head computes attention separately.
+This places the tensors in a layout suitable for computing attention independently in every head.
 
-**Appending the cache**
+All three tensors initially describe **only the new tokens**.
+
+## 4. Add previously cached keys and values
 
 ```python
 if cache is not None:
@@ -50,116 +83,209 @@ if cache is not None:
     v = torch.cat([cache[1], v], dim=2)
 ```
 
-`cache` contains `(past_keys, past_values)`. Dimension `2` is the sequence dimension, so these lines append the new tokens after the previous tokens.
+Dimension `2` is the sequence dimension, so this appends the new keys and values after the old ones.
 
-Afterward:
+After concatenation:
 
 ```text
 q: [B, num_heads, S_new,   d_k]
 k: [B, num_heads, S_total, d_k]
 v: [B, num_heads, S_total, d_k]
-
-S_total = S_past + S_new
 ```
 
-**Queries cover only the new tokens; keys and values cover the entire sequence.** Earlier queries aren’t needed because this call computes outputs only for the new tokens.
+Notice that **queries are not cached**.
 
-`new_cache = (k, v)` saves the expanded history for the next call. The module doesn’t store the cache internally—you pass it back in.
+Each call computes outputs only for the new tokens, so only their queries are needed. Those new queries can attend to both past and current keys and values.
 
-**Computing attention scores**
+```python
+new_cache = (k, v)
+S_total = k.shape[2]
+```
+
+The combined keys and values become the cache for the next call.
+
+### Why this helps
+
+When generating the next token, earlier tokens’ keys and values have already been computed. Caching avoids recomputing those projections—and, in a full transformer, avoids rerunning the previous tokens through all the layers.
+
+The new token must still attend over the growing history, so caching does **not** make attention cost independent of sequence length.
+
+## 5. Compute attention scores
 
 ```python
 scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
 ```
 
-For every new query, this computes a dot product with every key:
+This implements scaled dot-product attention scores:
 
+\[
+\text{scores} = \frac{QK^\top}{\sqrt{d_k}}
+\]
 
+The shapes are:
 
-$$
+```text
+q:                 [B, num_heads, S_new, d_k]
+k.transpose(...):  [B, num_heads, d_k, S_total]
+scores:            [B, num_heads, S_new, S_total]
+```
 
-\text{score}_{i,j} = \frac{q_i \cdot k_j}{\sqrt{d_k}}
+For every new query token, there is one score for every available key token.
 
-$$
+The division by \(\sqrt{d_k}\) helps keep the scores from becoming excessively large as the head dimension increases, which would make softmax overly concentrated.
 
+## 6. Apply the causal mask
 
+```python
+if S_new > 1:
+    S_past = S_total - S_new
+    mask = torch.triu(
+        torch.ones(S_new, S_total, device=x.device, dtype=torch.bool),
+        diagonal=S_past + 1,
+    )
+    scores = scores.masked_fill(mask, float('-inf'))
+```
 
-The resulting shape is `[B, num_heads, S_new, S_total]`. `torch.matmul` performs these matrix multiplications separately across batch and head dimensions. [PyTorch documentation](https://docs.pytorch.org/docs/stable/generated/torch.matmul.html)
+**Causal attention means a token may attend to itself and earlier tokens, but not later tokens.**
 
-Dividing by `sqrt(d_k)` keeps dot products from growing too large as the head dimension increases, helping prevent excessively sharp softmax weights.
+The complication is that the queries cover only the new tokens, while the keys cover the entire history. The mask therefore needs an offset.
 
-**Blocking attention to future tokens**
+For new query index `i`, its position in the full sequence is:
 
-The causal mask ensures that new query `i` can attend only to key positions:
+```text
+S_past + i
+```
+
+It may attend to key position `j` only when:
 
 ```text
 j <= S_past + i
 ```
 
-For example, suppose `A B C` are cached and `D E` arrive together:
+The shifted upper-triangular mask blocks exactly the positions where:
 
 ```text
-             Keys
-          A B C D E
-Query D   ✓ ✓ ✓ ✓ ✗
-Query E   ✓ ✓ ✓ ✓ ✓
+j > S_past + i
 ```
 
-This is why the code uses:
+### Example: three cached tokens and two new tokens
 
-```python
-diagonal=S_past + 1
+Suppose the sequence is:
+
+```text
+Cached: A B C
+New:    D E
 ```
 
-`torch.triu` marks positions on and above that offset diagonal—exactly the future positions to block. [PyTorch documentation](https://docs.pytorch.org/docs/stable/generated/torch.triu.html)
+The allowed attention pattern is:
 
-Those scores become `-inf`, which gives them zero probability after softmax.
+```text
+                  Keys
+              A  B  C  D  E
+Query D       ✓  ✓  ✓  ✓  ✗
+Query E       ✓  ✓  ✓  ✓  ✓
+```
 
-When `S_new == 1`, there are no future tokens in the supplied keys: everything is either past history or the current token. No causal mask is needed.
+Here, `S_past = 3`, so `diagonal = 4`. That masks the score from `D` to `E`.
 
-The mask also works for multiple new tokens appended to an existing cache, despite the comment mentioning only prefill.
+Masked scores become `-inf`, which turns into zero probability after softmax.
 
-**Combining the values and producing the output**
+### Why skip the mask when `S_new == 1`?
+
+With one new token, all keys belong to either:
+
+- earlier cached tokens, or
+- the current token itself.
+
+There are no future tokens to block.
+
+With no cache, `S_past = 0`, so the mask becomes the usual causal upper triangle.
+
+## 7. Convert scores into weights and combine values
 
 ```python
 weights = torch.softmax(scores, dim=-1)
 attn = torch.matmul(weights, v)
 ```
 
-Softmax turns each query’s scores into weights over key positions. Multiplying by `v` creates a weighted sum of the values:
+Softmax runs across the key positions, converting each query’s scores into attention weights.
+
+Then each query receives a weighted sum of the values:
+
+\[
+\text{Attention}(Q,K,V)
+=
+\operatorname{softmax}\left(
+\frac{QK^\top}{\sqrt{d_k}} + M
+\right)V
+\]
+
+where \(M\) is zero for allowed positions and \(-\infty\) for blocked positions.
+
+Shapes:
 
 ```text
-attn: [B, num_heads, S_new, d_k]
+weights: [B, num_heads, S_new, S_total]
+v:       [B, num_heads, S_total, d_k]
+attn:    [B, num_heads, S_new, d_k]
 ```
 
-Finally, the code swaps dimensions back, combines the heads, and applies the learned output projection `W_o`:
+## 8. Combine the heads and produce the output
+
+```python
+out = self.W_o(
+    attn.transpose(1, 2).contiguous().view(B, S_new, -1)
+)
+```
+
+The shape changes are:
 
 ```text
 [B, num_heads, S_new, d_k]
-                 ↓
+          ↓ transpose
+[B, S_new, num_heads, d_k]
+          ↓ concatenate head outputs
+[B, S_new, d_model]
+          ↓ output projection W_o
 [B, S_new, d_model]
 ```
 
-`.contiguous()` arranges the transposed tensor in memory so the following `.view()` can combine the heads.
+`.contiguous()` ensures the transposed tensor has a memory layout compatible with `.view()`.
 
-The return values are:
+Finally:
 
 ```python
-out        # [B, S_new, d_model]
-new_cache  # two tensors, each [B, num_heads, S_total, d_k]
+return out, new_cache
 ```
 
-Typical use:
+## Typical usage
 
 ```python
-attention = KVCacheAttention(d_model=512, num_heads=8).eval()
+attention = KVCacheAttention(d_model=128, num_heads=8)
+attention.eval()
 
 with torch.inference_mode():
-    # Prefill: process the prompt.
-    out, cache = attention(torch.randn(1, 3, 512))
+    # Prefill: process an entire prompt with causal attention.
+    prompt = torch.randn(1, 5, 128)
+    prompt_out, cache = attention(prompt)
 
-    # Decode: process only the next token, reusing the prompt's K/V.
-    out, cache = attention(torch.randn(1, 1, 512), cache)
+    # Decode: process one additional token using the cached history.
+    next_token = torch.randn(1, 1, 128)
+    next_out, cache = attention(next_token, cache)
 ```
 
-Caching saves recomputation of past keys and values, but each new query still attends over the growing history. This is an attention layer; positional encoding, padding masks, and the other parts of a Transformer block would need to be supplied elsewhere.
+After prefill, each cached tensor has shape:
+
+```text
+[1, 8, 5, 16]
+```
+
+After processing the next token:
+
+```text
+[1, 8, 6, 16]
+```
+
+**In short:** the new tokens supply the queries; all tokens seen so far supply the keys and values; the causal mask blocks future tokens; and the updated KV cache is carried into the next call.
+
+This is an attention component, not a complete transformer block: it does not include positional encoding, normalization, residual connections, or a feed-forward network.

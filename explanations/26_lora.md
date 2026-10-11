@@ -1,87 +1,165 @@
-# LoRA linear layer
+This implements **LoRA (Low-Rank Adaptation)** for a linear layer: it freezes the layer’s original weights and learns a small, low-rank correction to its output instead.
 
-This implements **LoRA (Low-Rank Adaptation)**: keep a linear layer fixed and learn a small correction using two trainable matrices. This reduces the number of parameters you need to train. [Original LoRA paper](https://arxiv.org/abs/2106.09685)
+## 1. The basic idea
 
-The output combines two paths:
+A normal linear layer computes:
 
-```text
-x ──→ frozen linear layer ──────────────────→ add → output
- └──→ trainable A ──→ trainable B ──→ scale ──↗
-```
+\[
+y = xW^\top + b
+\]
 
-**The base layer**
+To fine-tune it normally, you would update the full weight matrix \(W\).
+
+LoRA instead keeps \(W\) fixed and learns two smaller matrices, \(A\) and \(B\), whose product provides a weight update:
+
+\[
+\Delta W = BA
+\]
+
+Your code therefore computes:
+
+\[
+y = xW^\top + b + \frac{\alpha}{r}\,xA^\top B^\top
+\]
+
+where \(r\) is the chosen `rank`.
+
+Equivalently, this acts like a linear layer with effective weights:
+
+\[
+W_{\text{effective}} = W + \frac{\alpha}{r}BA
+\]
+
+**The correction is low-rank; the original weight matrix does not have to be.**
+
+## 2. What the constructor does
+
+### Create the base layer
 
 ```python
 self.linear = nn.Linear(in_features, out_features)
+```
+
+This creates a standard linear layer with:
+
+- A weight matrix of shape `(out_features, in_features)`.
+- A bias vector of shape `(out_features,)`.
+
+### Freeze its parameters
+
+```python
 self.linear.weight.requires_grad_(False)
 self.linear.bias.requires_grad_(False)
 ```
 
-`nn.Linear` computes `x @ weight.T + bias`. Setting `requires_grad` to `False` freezes its weight and bias, so ordinary gradient-based training leaves them unchanged. [PyTorch Linear documentation](https://docs.pytorch.org/docs/main/generated/torch.nn.Linear.html)
+These parameters will not receive gradients or be updated by gradient-based training. Only the LoRA parameters will be learned.
 
-**The trainable correction**
+Freezing the weights **does not prevent gradients from flowing back to the input** if the input requires gradients.
+
+### Create the two trainable matrices
 
 ```python
 self.lora_A = nn.Parameter(torch.randn(rank, in_features) * 0.01)
 self.lora_B = nn.Parameter(torch.zeros(out_features, rank))
 ```
 
-`nn.Parameter` registers these tensors as model parameters, with gradients enabled by default. [PyTorch Parameter documentation](https://docs.pytorch.org/docs/stable/generated/torch.nn.parameter.Parameter.html)
+Their shapes and roles are:
 
-| Matrix | Shape | Purpose |
+| Parameter | Shape | Role |
 |---|---|---|
-| `A` | `(rank, in_features)` | Projects input features into a smaller space |
-| `B` | `(out_features, rank)` | Projects that smaller representation to output features |
+| `lora_A` | `(rank, in_features)` | Projects the input into a smaller, rank-sized space |
+| `lora_B` | `(out_features, rank)` | Projects that representation into the output space |
 
-Typically, `rank` is much smaller than either feature dimension. For example, with 1,024 input features and `rank=8`, `A` produces an 8-dimensional intermediate representation.
+Wrapping them in `nn.Parameter` registers them as trainable parameters of the module.
 
-**The forward pass**
+`A` starts with small random values, while `B` starts at zero. Therefore, initially:
 
-Your expression can be expanded as:
+\[
+BA = 0
+\]
+
+So **the LoRA branch initially contributes nothing**, and the module produces exactly the base layer’s output.
+
+This also means that on the first backward pass, `B` can receive a nonzero gradient, while `A`’s gradient is zero because `B` is still zero. Once `B` changes, `A` can start learning too. Initializing both matrices to zero would prevent either from learning through this branch.
+
+### Set the correction’s scale
 
 ```python
-base = self.linear(x)
-compressed = x @ self.lora_A.T
-correction = compressed @ self.lora_B.T
-return base + correction * self.scaling
+self.scaling = alpha / rank
 ```
 
-Here, `@` means matrix multiplication and `.T` means transpose. For a batch of inputs:
+This controls the magnitude of the LoRA contribution. `alpha` is a hyperparameter; dividing by `rank` is the conventional LoRA scaling rule.
+
+`rank` must be a positive integer.
+
+## 3. How `forward` works
+
+```python
+return self.linear(x) + (x @ self.lora_A.T @ self.lora_B.T) * self.scaling
+```
+
+Here:
+
+- `@` means matrix multiplication.
+- `.T` transposes a matrix.
+
+For an input batch of shape `(batch_size, in_features)`:
 
 ```text
-x:          (batch_size, in_features)
-compressed: (batch_size, rank)
-correction: (batch_size, out_features)
-output:     (batch_size, out_features)
+x                         (batch_size, in_features)
+  @ lora_A.T              (in_features, rank)
+-------------------------------------------------
+intermediate              (batch_size, rank)
+  @ lora_B.T              (rank, out_features)
+-------------------------------------------------
+LoRA correction           (batch_size, out_features)
 ```
 
-`self.scaling = alpha / rank` controls the size of the correction.
+That correction is scaled and added to the base output, which has the same shape.
 
-Mathematically, this is equivalent to using an effective weight:
+Conceptually:
 
+```python
+base_output = self.linear(x)
+low_rank_features = x @ self.lora_A.T
+correction = low_rank_features @ self.lora_B.T
 
-
-$$
-
-W_{\text{effective}} = W + \frac{\alpha}{r}BA
-
-$$
-
-
-
-The update `BA` has rank at most `r`, which explains the name **low-rank adaptation**. The original `W` stays fixed while `A` and `B` learn.
-
-**Why initialize `B` to zero?**
-
-Initially, the correction is zero, so this module produces exactly the base layer’s output. `B` can receive a nonzero gradient on the first backward pass; `A`’s loss gradient initially equals zero because `B` is zero. Once `B` changes, `A` can learn too.
-
-For a 1,024 × 1,024 layer with `rank=8`, you train only:
-
-```text
-A + B: 8×1024 + 1024×8 = 16,384 parameters
-Full weight:             1,048,576 parameters
+return base_output + correction * self.scaling
 ```
 
-That is **64 times fewer trainable weight parameters**.
+## 4. Why this saves trainable parameters
 
-One important detail: **this code creates a randomly initialized base layer and immediately freezes it**. For typical LoRA fine-tuning, you would first load or copy an existing pretrained layer’s weights and bias.
+Updating the full weight matrix requires:
+
+\[
+\text{in\_features} \times \text{out\_features}
+\]
+
+trainable weight parameters.
+
+LoRA requires only:
+
+\[
+r \times (\text{in\_features} + \text{out\_features})
+\]
+
+For example, with `in_features=768`, `out_features=768`, and `rank=8`:
+
+- **Full weight matrix:** \(768 \times 768 = 589{,}824\) parameters.
+- **LoRA matrices:** \(8 \times (768 + 768) = 12{,}288\) parameters.
+
+That is **48× fewer trainable weight parameters**, excluding bias. The original weights still exist in memory; LoRA mainly reduces the parameters being trained and their gradient/optimizer-state storage.
+
+## 5. One important caveat
+
+This line creates a **new, randomly initialized** base layer:
+
+```python
+self.linear = nn.Linear(in_features, out_features)
+```
+
+It does not load pretrained weights.
+
+LoRA is typically used to adapt an **already-trained layer**. For that use case, you would wrap an existing layer or copy its pretrained weights into `self.linear` before training.
+
+**In short:** this module computes “frozen linear output + a small trainable low-rank correction.”

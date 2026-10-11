@@ -1,105 +1,342 @@
-# Grouped Query Attention
+This code implements **grouped-query self-attention (GQA)**: a version of multi-head attention where **multiple query heads share the same key and value heads**.
 
-This implements **grouped-query self-attention (GQA)**. Each token gets several query heads, but multiple query heads share the same key and value heads.
+It takes an input tensor of shape **`[batch_size, sequence_length, d_model]`** and returns a tensor with the same shape.
 
-The input and output both have shape **`(B, S, d_model)`**:
+## 1. What makes it “grouped-query” attention?
 
-- `B`: batch size
-- `S`: number of tokens
-- `d_model`: features per token
+Attention uses three representations of each token:
 
-Here’s how it works.
+- **Query (`q`)**: what this token is looking for.
+- **Key (`k`)**: what this token can be matched against.
+- **Value (`v`)**: the information this token contributes if attended to.
 
-1. **Set the size of each head**
+In standard multi-head attention, every query head has its own corresponding key and value head. GQA uses fewer key/value heads and shares them across groups of query heads.
 
-   ```python
-   self.d_k = d_model // num_heads
-   ```
+For example, with:
 
-   For example, with `d_model=512` and `num_heads=8`, each head has 64 features.
+```python
+num_heads = 8
+num_kv_heads = 2
+```
 
-2. **Create queries, keys, and values**
+the sharing is:
 
-   ```python
-   q = self.W_q(x) ...
-   k = self.W_k(x) ...
-   v = self.W_v(x) ...
-   ```
+```text
+Query heads 0, 1, 2, 3 → Key/value head 0
+Query heads 4, 5, 6, 7 → Key/value head 1
+```
 
-   The linear layers learn three representations of each token:
+Each query head still computes its **own attention weights**, because its queries are different. Only the keys and values are shared.
 
-   - **Query:** what information this token is looking for.
-   - **Key:** what information this token can be matched against.
-   - **Value:** the information this token contributes when attended to.
+The common variants are:
 
-   The reshaping separates heads, and `transpose(1, 2)` moves the head dimension before the sequence dimension:
+| Attention type | Number of key/value heads |
+|---|---:|
+| Multi-head attention (MHA) | Same as the number of query heads |
+| Grouped-query attention (GQA) | Fewer than the query heads, typically more than one |
+| Multi-query attention (MQA) | One |
 
-   | Tensor | Shape |
-   |---|---|
-   | `q` | `(B, num_heads, S, d_k)` |
-   | `k` | `(B, num_kv_heads, S, d_k)` |
-   | `v` | `(B, num_kv_heads, S, d_k)` |
+## 2. Initialization
 
-   Queries have more heads than keys and values. That is the defining feature of GQA.
+```python
+self.num_heads = num_heads
+self.num_kv_heads = num_kv_heads
+self.d_k = d_model // num_heads
+```
 
-3. **Share each key/value head across a group of query heads**
+Here:
 
-   ```python
-   repeats = self.num_heads // self.num_kv_heads
-   k = k.repeat_interleave(repeats, dim=1)
-   v = v.repeat_interleave(repeats, dim=1)
-   ```
+- `d_model` is the size of each token’s representation.
+- `num_heads` is the number of **query heads**.
+- `num_kv_heads` is the number of **key/value heads**.
+- `d_k` is the size of each head.
 
-   With 8 query heads and 2 key/value heads:
+For example:
 
-   ```text
-   Query heads:     Q0 Q1 Q2 Q3 | Q4 Q5 Q6 Q7
-   Shared KV head:  KV0         | KV1
-   ```
+```text
+d_model = 512
+num_heads = 8
+num_kv_heads = 2
 
-   Repeating makes `k` and `v` match the query head count. The copies within each group contain identical data; the queries remain different.
+d_k = 512 / 8 = 64
+```
 
-4. **Calculate how strongly each token attends to every token**
+Each query, key, and value head has 64 features.
 
-   ```python
-   scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
-   weights = torch.softmax(scores, dim=-1)
-   ```
+### Projection layers
 
-   Each query is compared with every key using a dot product:
+```python
+self.W_q = nn.Linear(d_model, d_model)
+self.W_k = nn.Linear(d_model, num_kv_heads * self.d_k)
+self.W_v = nn.Linear(d_model, num_kv_heads * self.d_k)
+self.W_o = nn.Linear(d_model, d_model)
+```
 
+These are learned transformations:
 
+```text
+W_q: 512 → 512  = 8 query heads × 64 features
+W_k: 512 → 128  = 2 key heads   × 64 features
+W_v: 512 → 128  = 2 value heads × 64 features
+W_o: 512 → 512
+```
 
-$$
+The key and value projections are smaller than in standard multi-head attention. `W_o` is the output projection that mixes the concatenated results from all query heads.
 
-   \text{score}_{ij}=\frac{q_i\cdot k_j}{\sqrt{d_k}}
+## 3. Project the input into queries, keys, and values
 
-$$
+```python
+B, S, _ = x.shape
+```
 
+The input has shape:
 
+```text
+x: [B, S, d_model]
+```
 
-   Scaling helps keep the scores from becoming too large. Softmax converts each row into attention weights that sum to 1 across the key tokens.
+where `B` is batch size and `S` is sequence length.
 
-   Both `scores` and `weights` have shape **`(B, num_heads, S, S)`**.
+### Queries
 
-5. **Gather information and combine the heads**
+```python
+q = self.W_q(x).view(B, S, self.num_heads, self.d_k).transpose(1, 2)
+```
 
-   ```python
-   attn = torch.matmul(weights, v)
-   ```
+This performs three operations:
 
-   Each token receives a weighted sum of the value vectors. The result has shape `(B, num_heads, S, d_k)`.
+```text
+Linear projection:
+[B, S, d_model]
 
-   ```python
-   out = attn.transpose(1, 2).contiguous().view(B, S, -1)
-   return self.W_o(out)
-   ```
+Split the features into heads:
+[B, S, num_heads, d_k]
 
-   This concatenates the head outputs into `(B, S, d_model)`. `.contiguous()` makes the transposed tensor suitable for `.view()`, and `W_o` learns how to mix the heads’ results.
+Move the head dimension before the sequence dimension:
+[B, num_heads, S, d_k]
+```
 
-A few practical details matter:
+### Keys and values
 
-- Require `d_model % num_heads == 0` and `num_heads % num_kv_heads == 0`.
-- For normal PyTorch training, inherit from `nn.Module` and call `super().__init__()` so the layers are registered.
-- There is **no causal or padding mask**, so every token can attend to every position.
-- GQA reduces key/value projection sizes and can reduce KV-cache memory. This implementation explicitly copies K/V heads with `repeat_interleave`, so it loses some of that memory advantage during attention computation.
+```python
+k = self.W_k(x).view(B, S, self.num_kv_heads, self.d_k).transpose(1, 2)
+v = self.W_v(x).view(B, S, self.num_kv_heads, self.d_k).transpose(1, 2)
+```
+
+These become:
+
+```text
+k: [B, num_kv_heads, S, d_k]
+v: [B, num_kv_heads, S, d_k]
+```
+
+Because all three projections come from the same `x`, this is **self-attention**.
+
+## 4. Share keys and values across query heads
+
+```python
+repeats = self.num_heads // self.num_kv_heads
+k = k.repeat_interleave(repeats, dim=1)
+v = v.repeat_interleave(repeats, dim=1)
+```
+
+For 8 query heads and 2 key/value heads:
+
+```python
+repeats = 4
+```
+
+`repeat_interleave` duplicates each key/value head four times:
+
+```text
+Before:
+[k0, k1]
+
+After:
+[k0, k0, k0, k0, k1, k1, k1, k1]
+```
+
+Now all three tensors have matching head dimensions:
+
+```text
+q: [B, num_heads, S, d_k]
+k: [B, num_heads, S, d_k]
+v: [B, num_heads, S, d_k]
+```
+
+These repeated copies do **not** introduce new learned parameters. The query heads in each group still share the same underlying key/value projections.
+
+## 5. Compute attention scores
+
+```python
+scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
+```
+
+For each head, this multiplies:
+
+```text
+q:                    [S, d_k]
+k.transpose(-2, -1):  [d_k, S]
+--------------------------------
+scores:               [S, S]
+```
+
+Including batch and head dimensions:
+
+```text
+scores: [B, num_heads, S, S]
+```
+
+Each entry tells us how strongly one token’s query matches another token’s key:
+
+\[
+\text{scores}_{b,h,i,j}
+=
+\frac{q_{b,h,i}\cdot k_{b,h,j}}{\sqrt{d_k}}
+\]
+
+- `i` is the token receiving information.
+- `j` is the token it might attend to.
+
+Dividing by \(\sqrt{d_k}\) keeps dot products from becoming too large as the head dimension grows, helping prevent softmax from becoming excessively sharp.
+
+## 6. Convert scores into attention weights
+
+```python
+weights = torch.softmax(scores, dim=-1)
+```
+
+Softmax operates over the last dimension—the tokens being attended to.
+
+For each query token and head:
+
+```text
+weights[..., i, :] sums to 1
+```
+
+For example:
+
+```text
+[0.1, 0.7, 0.2]
+```
+
+means the query token takes 10%, 70%, and 20% of its information from the three value vectors.
+
+## 7. Take a weighted sum of values
+
+```python
+attn = torch.matmul(weights, v)
+```
+
+For each head:
+
+```text
+weights: [S, S]
+v:       [S, d_k]
+-----------------
+attn:    [S, d_k]
+```
+
+The complete result is:
+
+```text
+attn: [B, num_heads, S, d_k]
+```
+
+Mathematically:
+
+\[
+\text{attn}_{b,h,i}
+=
+\sum_{j=1}^{S}
+\text{weights}_{b,h,i,j}\,v_{b,h,j}
+\]
+
+Each output token is now a weighted combination of information from the sequence.
+
+## 8. Combine the heads and project the result
+
+```python
+out = attn.transpose(1, 2).contiguous().view(B, S, -1)
+```
+
+The shape changes are:
+
+```text
+[B, num_heads, S, d_k]
+            ↓ transpose
+[B, S, num_heads, d_k]
+            ↓ concatenate head features
+[B, S, num_heads * d_k]
+            =
+[B, S, d_model]
+```
+
+`.contiguous()` ensures the tensor has a memory layout suitable for the subsequent `.view()`, since transposing typically produces a non-contiguous view.
+
+Finally:
+
+```python
+return self.W_o(out)
+```
+
+The output projection mixes information across the heads. The final shape is:
+
+```text
+[B, S, d_model]
+```
+
+## Shape summary
+
+For `B=2`, `S=10`, `d_model=512`, `num_heads=8`, and `num_kv_heads=2`:
+
+| Tensor | Shape |
+|---|---|
+| Input `x` | `[2, 10, 512]` |
+| Queries `q` | `[2, 8, 10, 64]` |
+| Keys/values before repetition | `[2, 2, 10, 64]` |
+| Keys/values after repetition | `[2, 8, 10, 64]` |
+| Attention scores and weights | `[2, 8, 10, 10]` |
+| Per-head attention output | `[2, 8, 10, 64]` |
+| Final output | `[2, 10, 512]` |
+
+## Important limitations of this implementation
+
+### 1. It should inherit from `nn.Module`
+
+For normal PyTorch usage, the class should start like this:
+
+```python
+class GroupQueryAttention(nn.Module):
+    def __init__(self, d_model, num_heads, num_kv_heads):
+        super().__init__()
+        ...
+```
+
+Without this, calling `attention.forward(x)` can still compute gradients, but the object itself does not support normal module behavior such as `attention(x)`, `.parameters()`, `.to(device)`, or `.state_dict()`.
+
+### 2. The dimensions must divide evenly
+
+The implementation requires:
+
+```python
+assert num_heads > 0 and num_kv_heads > 0
+assert d_model % num_heads == 0
+assert num_heads % num_kv_heads == 0
+```
+
+Otherwise, the reshaping or head matching will fail.
+
+### 3. There is no attention mask
+
+Every token can attend to every token, including future tokens and padding.
+
+For autoregressive language modeling, a **causal mask** must be applied to `scores` before softmax so a token cannot see later tokens.
+
+### 4. Explicit repetition reduces the memory advantage
+
+GQA reduces key/value projection parameters and can reduce the size of a KV cache during autoregressive inference. However, this implementation explicitly materializes repeated keys and values, giving them the same expanded shape used by standard multi-head attention.
+
+It demonstrates GQA clearly, but it does not fully realize the runtime memory savings of an optimized implementation. It also still computes an attention matrix for **every query head**.
+
+**In short:** the computation is ordinary scaled dot-product attention, except that groups of query heads reuse the same learned keys and values.

@@ -1,69 +1,141 @@
-# Simple Linear Layer
+This code implements a **fully connected layer** from scratch using PyTorch. It takes an input vector, multiplies it by trainable weights, and adds a trainable bias:
 
-This implements a **fully connected linear layer**: each output is a weighted sum of the inputs, plus a bias.
-
-
-
-$$
-
+\[
 y = xW^\top + b
+\]
 
-$$
+Here’s how each part works.
 
+## 1. Creating the layer
 
+```python
+class SimpleLinear:
+    def __init__(self, in_features: int, out_features: int):
+```
 
-`__init__` creates the layer’s weights and biases:
+The constructor takes:
+- **`in_features`**: the number of values in each input.
+- **`out_features`**: the number of values the layer produces for each input.
 
-- `in_features`: number of values in each input.
-- `out_features`: number of values in each output.
-- For example, `SimpleLinear(3, 2)` turns three input values into two output values.
+For example:
+
+```python
+layer = SimpleLinear(in_features=3, out_features=2)
+```
+
+This creates a layer that maps a vector with **3 features** to a vector with **2 features**.
+
+The `: int` annotations indicate the expected argument types; they do not enforce those types at runtime.
+
+## 2. Initializing the weights
 
 ```python
 self.weight = torch.randn(out_features, in_features) * (1 / math.sqrt(in_features))
 ```
 
-Creates a weight matrix with shape `(out_features, in_features)`. Each row contains the weights for one output.
+This creates a weight matrix with shape:
 
-`torch.randn` samples random numbers from a normal distribution with mean 0 and standard deviation 1. Multiplying by `1 / sqrt(in_features)` makes the initial weights smaller as the input size grows, helping control the scale of the outputs.
+```text
+(out_features, in_features)
+```
+
+For the example above, its shape is `(2, 3)`:
+
+```text
+              input 1   input 2   input 3
+output 1       w₁₁       w₁₂       w₁₃
+output 2       w₂₁       w₂₂       w₂₃
+```
+
+Each output has one weight for each input feature.
+
+- `torch.randn(...)` samples random values from a normal distribution with mean `0` and standard deviation `1`.
+- Multiplying by `1 / sqrt(in_features)` makes the weights smaller when there are more input features. This helps keep the initial output scale from growing simply because the input has more features.
 
 ```python
 self.weight.requires_grad_(True)
 ```
 
-Enables gradient tracking for the weights. After calculating a loss and calling `loss.backward()`, PyTorch stores their gradients in `self.weight.grad`. The trailing `_` means this method changes the tensor in place.
+This enables **gradient tracking** for the weights. During training, PyTorch can calculate how the loss changes with respect to each weight.
+
+The trailing underscore in `requires_grad_` means it changes the existing tensor in place.
+
+## 3. Initializing the bias
 
 ```python
 self.bias = torch.zeros(out_features, requires_grad=True)
 ```
 
-Creates one bias per output, initially zero, with gradient tracking enabled.
+This creates one bias value for each output, initially set to zero.
 
-`forward` computes the output:
+For a layer with two outputs:
 
-```python
-return x @ self.weight.T + self.bias
+```text
+bias = [0, 0]
 ```
 
+The bias is trainable too, because `requires_grad=True`.
+
+## 4. Computing the output
+
+```python
+def forward(self, x: torch.Tensor) -> torch.Tensor:
+    return x @ self.weight.T + self.bias
+```
+
+This is the layer’s **forward pass**.
+
 - `@` performs matrix multiplication.
-- `.T` transposes the weight matrix so the dimensions match.
-- Adding `bias` applies the same bias vector to every input in the batch.
+- `self.weight.T` transposes the weight matrix.
+- `+ self.bias` adds the bias to each output.
 
-For a layer with three inputs and two outputs:
+For a batch of inputs, the shapes are:
 
-| Tensor | Shape |
-|---|---|
-| `x` | `(batch_size, 3)` |
-| `weight` | `(2, 3)` |
-| `weight.T` | `(3, 2)` |
-| Output | `(batch_size, 2)` |
+```text
+x:             (batch_size, in_features)
+weight:        (out_features, in_features)
+weight.T:      (in_features, out_features)
 
-For example:
+x @ weight.T:  (batch_size, out_features)
+bias:          (out_features,)
+```
+
+PyTorch automatically **broadcasts** the bias across all examples in the batch.
+
+For a single input with three features, each output is computed as:
+
+```text
+output₁ = x₁w₁₁ + x₂w₁₂ + x₃w₁₃ + b₁
+output₂ = x₁w₂₁ + x₂w₂₂ + x₃w₂₃ + b₂
+```
+
+## Example
 
 ```python
 layer = SimpleLinear(3, 2)
-x = torch.randn(4, 3)       # Four examples, three features each
+
+# Four examples, each containing three features
+x = torch.randn(4, 3)
+
 y = layer.forward(x)
-print(y.shape)              # torch.Size([4, 2])
+
+print(y.shape)
+# torch.Size([4, 2])
 ```
 
-There is **no activation function** here. Gradient tracking supports training, but an optimizer must still update the weights and biases. Because this is a plain Python class rather than a `torch.nn.Module`, it also lacks conveniences such as `layer.parameters()` and calling the layer as `layer(x)`.
+Each of the four input examples produces two output values.
+
+## Important details
+
+- **There is no activation function.** This only performs a weighted sum plus bias. Strictly speaking, it is an *affine* transformation, although neural-network terminology calls it a linear layer.
+- **Gradients do not update parameters automatically.** Calling `loss.backward()` computes gradients in `layer.weight.grad` and `layer.bias.grad`; an optimizer or manual update must then change the parameters.
+- **This is an ordinary Python class, not a `torch.nn.Module`.** You call `layer.forward(x)`, not `layer(x)`, and it lacks conveniences such as `.parameters()` and `.to(device)`.
+
+The standard PyTorch counterpart is:
+
+```python
+layer = torch.nn.Linear(3, 2)
+y = layer(x)
+```
+
+It performs the same kind of computation, though its default initialization differs.

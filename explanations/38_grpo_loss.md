@@ -1,31 +1,46 @@
-# Group Relative Policy Optimization Loss
+This function computes a **policy-gradient loss that encourages a model to make higher-reward responses more likely and lower-reward responses less likely**, comparing each response only with other responses to the **same prompt**.
 
-This function builds a loss that **encourages responses with above-average rewards for their prompt and discourages responses with below-average rewards**.
+Its central idea is:
 
-Each position in the tensors describes one sampled response:
+> Judge a response by how much better or worse its reward is than the average reward in its group.
 
-- `logps[i]`: the model’s log-probability of that response.
-- `rewards[i]`: its reward; higher means better.
-- `group_ids[i]`: which prompt it belongs to.
-- `B`: the total number of responses across all prompts.
+## 1. What the inputs mean
 
-The function does three things.
+All three tensors have shape `(B,)`, where `B` is the total number of sampled responses:
 
-**1. Compare rewards within each group**
+- **`logps[i]`**: the model’s log-probability of generating response `i`.
+- **`rewards[i]`**: a scalar score for that response; higher is better.
+- **`group_ids[i]`**: identifies the prompt that response `i` belongs to.
+
+For example:
+
+```python
+rewards   = tensor([1., 2., 3., 4., 6.])
+group_ids = tensor([0,  0,  0,  1,  1 ])
+```
+
+The first three responses belong to one prompt; the last two belong to another. The function evaluates relative performance **within each group**, rather than comparing rewards across different prompts.
+
+## 2. Compute a relative advantage within each group
 
 ```python
 unique_ids = group_ids.unique()
 advantages = torch.empty_like(rewards)
 ```
 
-`unique()` finds the distinct groups. `empty_like()` allocates space for the advantages, using the shape, dtype, and device of `rewards`. The loop fills every position.
+- `unique()` finds the distinct group IDs.
+- `empty_like()` allocates a tensor with the same shape, dtype, and device as `rewards`. Its entries are filled in by the loop.
+
+For each group:
 
 ```python
 mask = group_ids == gid
 r_g = rewards[mask]
 ```
 
-The Boolean mask selects only responses belonging to the current group.
+`mask` selects the responses belonging to that group, and `r_g` contains their rewards.
+
+Next:
 
 ```python
 mean_g = r_g.mean()
@@ -33,45 +48,70 @@ std_g = r_g.std(unbiased=False)
 advantages[mask] = (r_g - mean_g) / (std_g + eps)
 ```
 
-For response $i$ in group $g$, this calculates:
+This calculates each response’s **normalized advantage**:
 
+\[
+A_i = \frac{r_i-\mu_{g(i)}}{\sigma_{g(i)}+\epsilon}
+\]
 
+Here:
 
-$$
+- \(r_i\) is response \(i\)’s reward.
+- \(\mu_{g(i)}\) is its group’s mean reward.
+- \(\sigma_{g(i)}\) is its group’s reward standard deviation.
+- \(\epsilon\) is a small number that prevents division by zero.
 
-A_i = \frac{r_i-\mu_g}{\sigma_g+\varepsilon}
+The resulting advantage means:
 
-$$
+| Advantage | Meaning |
+|---|---|
+| Positive | Better than the group average |
+| Negative | Worse than the group average |
+| Zero | Equal to the group average |
 
+**Why normalize?** Subtracting the mean provides a relative baseline. Dividing by the standard deviation makes the signal less dependent on the raw reward scale.
 
+### Example
 
-The **advantage** measures how much better or worse the response is than its group average:
+For one group with rewards:
 
-- Positive: above-average reward.
-- Negative: below-average reward.
-- Zero: exactly average.
+```python
+[1., 2., 3.]
+```
 
-Dividing by the standard deviation makes reward scales more comparable across groups. `unbiased=False` uses the population standard deviation, dividing the variance by the group size rather than group size minus one. `eps` prevents division by zero. [PyTorch documentation](https://docs.pytorch.org/docs/stable/generated/torch.std.html)
+The mean is `2`, and the standard deviation is approximately `0.816`, so the advantages are approximately:
 
-For example, suppose one prompt has three responses:
+```python
+[-1.225, 0., 1.225]
+```
 
-| Reward | Difference from mean $2$ | Advantage, approximately |
-|---:|---:|---:|
-| 1 | −1 | −1.225 |
-| 2 | 0 | 0 |
-| 3 | +1 | +1.225 |
+The first response should be discouraged, the middle one receives no direct training signal, and the last should be encouraged.
 
-Another prompt with rewards `[10, 20, 30]` gets approximately the same advantages. The comparison is relative to each prompt’s responses.
+`unbiased=False` computes the standard deviation using division by the group size \(N\), rather than \(N-1\). It also avoids the undefined sample-standard-deviation case for a one-response group.
 
-**2. Treat advantages as fixed weights**
+## 3. Stop gradients through the advantages
 
 ```python
 advantages_detached = advantages.detach()
 ```
 
-`detach()` removes the advantages from the computation graph. Backpropagation through this loss can affect the policy through `logps`, but cannot affect the reward calculations through the advantages. [PyTorch documentation](https://docs.pytorch.org/docs/stable/generated/torch.Tensor.detach.html)
+`detach()` treats the advantages as **fixed weights during backpropagation**.
 
-**3. Compute the policy loss**
+The intended learning path is:
+
+```text
+loss → log-probabilities → model parameters
+```
+
+not:
+
+```text
+loss → advantages → rewards
+```
+
+If `rewards` already has no gradient history, this does not change the result, but it explicitly enforces the intended behavior.
+
+## 4. Construct the loss
 
 ```python
 return -(advantages_detached * logps).mean()
@@ -79,35 +119,39 @@ return -(advantages_detached * logps).mean()
 
 Mathematically:
 
+\[
+L(\theta)
+=
+-\frac{1}{B}\sum_{i=1}^{B}
+A_i\,\log \pi_\theta(y_i\mid x_i)
+\]
 
+where \(x_i\) is the prompt and \(y_i\) is the sampled response.
 
-$$
+The minus sign turns a reward-maximization objective into a loss that an optimizer can **minimize**.
 
-L=-\frac{1}{B}\sum_{i=1}^{B} A_i\log\pi_\theta(y_i\mid x_i)
+The clearest way to see its behavior is to examine the gradient:
 
-$$
+\[
+\frac{\partial L}{\partial \text{logps}_i}
+=
+-\frac{A_i}{B}
+\]
 
+Thus, gradient descent pushes toward:
 
+- **Positive advantage:** higher log-probability, making that response more likely.
+- **Negative advantage:** lower log-probability, making that response less likely.
+- **Zero advantage:** no direct contribution from that response.
 
-The minus sign turns the objective into something an optimizer can **minimize**. Its derivative with respect to each log-probability is:
+Because responses share the same model parameters, these are the directions of their individual contributions—not guarantees that every response’s probability changes independently.
 
+## Important details
 
+- **Equal rewards within a group produce zero advantages.** There is no relative preference to learn.
+- **A one-response group also produces zero advantage.** Its reward equals its own group mean.
+- **The final average is over responses, not groups.** Larger groups therefore receive more total weight.
+- **`F` is imported but never used.**
+- **This is a simplified GRPO-style policy-gradient loss, not a full modern GRPO training objective.** Typical full implementations also use old-policy probability ratios, PPO-style clipping, often a reference-policy KL penalty, and token-level masking/aggregation.
 
-$$
-
-\frac{\partial L}{\partial \text{logps}_i}=-\frac{A_i}{B}
-
-$$
-
-
-
-So a positive advantage pushes toward increasing that response’s log-probability; a negative advantage pushes toward decreasing it. The function returns a scalar tensor; calling `loss.backward()` computes gradients, and the optimizer performs the update.
-
-A few details matter:
-
-- If every reward in a group is equal—including a group with only one response—all its advantages are zero, so it contributes no learning signal.
-- `rewards` should be floating point, and `logps` must remain connected to the model’s computation graph.
-- `.mean()` weights responses equally, so larger groups have more total weight.
-- `F` is imported but unused.
-
-This is a **simplified policy-gradient loss using GRPO’s group-relative advantages**. The original GRPO objective also includes current/old-policy probability ratios, clipping, and KL regularization toward a reference policy. Those terms are absent here. [Original GRPO paper](https://arxiv.org/html/2402.03300v3#S4.SS1.SSS1)
+**In short:** the function uses each prompt’s sampled responses as a comparison group, converts rewards into relative advantages, and uses those advantages to weight the model’s log-probabilities during training.

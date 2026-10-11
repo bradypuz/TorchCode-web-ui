@@ -172,6 +172,14 @@
 .reviewText h3 { font-size: 13px; font-weight: 650; color: #615372; }
 .reviewText p { font-size: 10px; color: #a69bb4; line-height: 1.5; margin-top: 4px; }
 .reviewScore { font-size: 8px; color: #b4a7c5; display: inline-block; margin-top: 5px; }
+.reviewPriority { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; margin: 6px 0 8px; padding: 4px 7px; border-radius: 6px; background: #f1edf8; border: 1px solid #e6def1; color: #796493; font-size: 8px; line-height: 1.4; }
+.reviewPriority strong { font-size: 10px; font-weight: 750; margin-left: 2px; }
+.reviewPriority small { font-size: 8px; font-weight: 500; color: #9483a6; }
+.reviewText .reviewScore { display: block; margin-top: 0; }
+.reviewMethod { margin-top: 17px; border-top: 1px solid #e4deee; padding-top: 12px; color: #82738f; }
+.reviewMethod summary { width: fit-content; cursor: pointer; font-size: 10px; font-weight: 600; line-height: 1.5; }
+.reviewMethod summary:focus-visible { outline: 2px solid #9e85b9; outline-offset: 4px; border-radius: 3px; }
+.reviewMethod p { max-width: 710px; font-size: 10px; line-height: 1.8; margin-top: 9px; color: #8f829e; }
 .reviewCard .quietButton { color: #8f7ea5 !important; background: #f5f1fb; border-color: #e8e0f2; }
 .historySection { margin-top: 33px; }
 .textButton { display: flex; align-items: center; gap: 6px; background: transparent; color: #8d9c7c; font-size: 10px !important; padding: 9px 0 9px 9px; }
@@ -222,7 +230,9 @@
 .libraryCard { border: 1px solid #e0e7d6; border-bottom-width: 3px; background: #fff; border-radius: 17px; padding: 20px; }
 .libraryCard:hover { transform: translateY(-3px); box-shadow: 0 6px 20px #2c491309; }
 .libraryCardTop { display: flex; align-items: center; justify-content: space-between; }
+.libraryStatuses { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .librarySolved { display: inline-flex; align-items: center; gap: 4px; color: #90aa6f; font-size: 9px; }
+.libraryReview { display: inline-flex; align-items: center; gap: 4px; color: #9078a7; font-size: 9px; }
 .libraryGlyph { background: #f2f6e8; width: 51px; height: 51px; border-radius: 15px; display: grid; place-items: center; color: #a2b97b; margin: 21px 0 17px; }
 .libraryCard:nth-child(3n+2) .libraryGlyph { background: #fff3e5; color: #d9b381; }
 .libraryCard:nth-child(3n+3) .libraryGlyph { background: #f0edf9; color: #b5a4c8; }

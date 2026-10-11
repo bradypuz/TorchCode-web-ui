@@ -1,69 +1,106 @@
-# Direct Preference Optimization Loss
+This implements **Direct Preference Optimization (DPO)**: a loss used to train a language model from pairs of responses where one response is preferred over the other.
 
-This computes the **Direct Preference Optimization (DPO) loss**, used to train a model to favor a preferred answer over a rejected answer for the same prompt. It measures that preference relative to a fixed reference model. [Original DPO paper](https://arxiv.org/html/2305.18290v3#S4)
+The goal is to make the policy model favor the **chosen** response over the **rejected** response, **relative to how much a fixed reference model favors them**.
 
-The inputs are usually tensors of shape `[batch_size]`:
+## 1. What the inputs mean
 
-- `policy_chosen_logps`: the model being trained’s log probabilities for preferred answers.
-- `policy_rejected_logps`: its log probabilities for rejected answers.
-- `ref_chosen_logps`, `ref_rejected_logps`: the reference model’s corresponding log probabilities.
+For each training example, you have a prompt and two responses:
 
-For language models, each value usually sums the answer tokens’ log probabilities. **Higher log probability means more likely**—for example, `-2` is higher than `-5`.
+- **Chosen:** the preferred response.
+- **Rejected:** the less-preferred response.
 
-1. **Compute a score relative to the reference.**
+The function receives four log probabilities:
 
-   ```python
-   chosen_rewards = beta * (policy_chosen_logps - ref_chosen_logps)
-   rejected_rewards = beta * (policy_rejected_logps - ref_rejected_logps)
-   ```
+| Input | Meaning |
+|---|---|
+| `policy_chosen_logps` | Current model’s log probability of the chosen response |
+| `policy_rejected_logps` | Current model’s log probability of the rejected response |
+| `ref_chosen_logps` | Reference model’s log probability of the chosen response |
+| `ref_rejected_logps` | Reference model’s log probability of the rejected response |
 
-   Subtracting log probabilities gives a log probability ratio:
+These are typically tensors of shape `[batch_size]`. For a language model, each response’s log probability is usually the **sum of its response-token log probabilities**, conditioned on the prompt.
 
+The reference model is usually a frozen copy of the model before preference training.
 
+## 2. Computing the “rewards”
 
-$$
+```python
+chosen_rewards = beta * (policy_chosen_logps - ref_chosen_logps)
+rejected_rewards = beta * (policy_rejected_logps - ref_rejected_logps)
+```
 
-   \log p_{\text{policy}}(y)-\log p_{\text{ref}}(y)
-   =\log\frac{p_{\text{policy}}(y)}{p_{\text{ref}}(y)}
+Each quantity measures how much the current policy favors a response compared with the reference model.
 
-$$
+Because these are **log** probabilities:
 
+\[
+\log \pi(y\mid x)-\log \pi_{\text{ref}}(y\mid x)
+=
+\log\frac{\pi(y\mid x)}{\pi_{\text{ref}}(y\mid x)}
+\]
 
+So:
 
-   A positive score means the policy assigns that answer greater probability than the reference does. These are *implicit reward scores*. `beta` scales them.
+- A **positive** reward means the policy assigns that response a higher probability than the reference does.
+- A **negative** reward means it assigns a lower probability.
+- A reward of **zero** means both models assign the same probability.
 
-2. **Compare the preferred and rejected scores.**
+These are called **implicit rewards**—they are computed from model probabilities, not produced by a separate reward model.
 
-   ```python
-   margin = chosen_rewards - rejected_rewards
-   ```
+`beta` is a positive hyperparameter that scales these rewards. It is **not the learning rate**; in DPO’s underlying formulation, it also controls the strength of regularization toward the reference model.
 
-   A positive margin means the policy favors the chosen answer **more strongly than the reference does**.
+## 3. Comparing chosen and rejected responses
 
-3. **Convert that margin into a loss.**
+```python
+chosen_rewards - rejected_rewards
+```
 
-   ```python
-   -F.logsigmoid(margin).mean()
-   ```
+This produces the preference margin:
 
-   For each pair, the loss is:
+\[
+z
+=
+\beta\left[
+(\log \pi_{\text{chosen}}-\log \pi_{\text{rejected}})
+-
+(\log \pi_{\text{ref,chosen}}-\log \pi_{\text{ref,rejected}})
+\right]
+\]
 
+The important question is:
 
+> Does the policy favor the chosen response over the rejected response **more than the reference model does**?
 
-$$
+A larger positive margin means yes. A negative margin means the policy’s relative preference has moved in the wrong direction.
 
-   -\log\sigma(m),\qquad \sigma(m)=\frac{1}{1+e^{-m}}
+**Subtle point:** DPO does not simply require the chosen response to have a higher absolute probability than the rejected response. It compares their probability ratio against the reference model’s ratio.
 
-$$
+## 4. Turning the margin into a loss
 
+```python
+return -F.logsigmoid(chosen_rewards - rejected_rewards).mean()
+```
 
+For each pair, the loss is:
 
-   | Margin $m$ | Loss |
-   |---:|---:|
-   | −2 | 2.127 |
-   | 0 | 0.693 |
-   | +2 | 0.127 |
+\[
+\ell=-\log \sigma(z)
+\]
 
-   Minimizing the loss encourages a larger margin. `F.logsigmoid` computes this stably, and `.mean()` averages across the batch.
+where \(\sigma\) is the sigmoid function.
 
-The function returns a single loss tensor. Calling `loss.backward()` supplies gradients that push up the chosen answer’s log probability and push down the rejected answer’s. The reference model should be frozen; the policy log probabilities must retain their gradients.
+| Margin \(z\) | Loss | Interpretation |
+|---:|---:|---|
+| `2` | ≈ `0.127` | Policy favors chosen more than the reference does |
+| `0` | ≈ `0.693` | Policy and reference have the same relative preference |
+| `-2` | ≈ `2.127` | Policy favors chosen less than the reference does |
+
+Minimizing this loss encourages the policy to increase the chosen response’s log probability relative to the rejected response’s.
+
+- `F.logsigmoid(...)` computes log-sigmoid in a numerically stable way.
+- The leading minus sign turns it into a loss to minimize.
+- `.mean()` averages the losses across the batch, returning a scalar tensor.
+
+During training, you would use that scalar with `loss.backward()`. The reference log probabilities should be computed without gradients.
+
+**In one sentence:** this loss trains the model to shift its relative preference toward the chosen response, using a frozen reference model as the baseline.

@@ -1,104 +1,245 @@
-# Rotary positional embeddings
+This function applies **Rotary Positional Embeddings (RoPE)** to the query tensor `q` and key tensor `k`, usually before computing attention in a Transformer.
 
-This implements **Rotary Positional Embeddings (RoPE)**. It adds position information to attention queries (`q`) and keys (`k`) by rotating pairs of their coordinates.
+The key idea is:
 
-Both inputs have shape `[B, S, D]`:
+> Encode a token’s position by rotating pairs of numbers in its query and key vectors. Different pairs rotate at different rates.
 
-- `B`: batch size
-- `S`: sequence length
-- `D`: vector dimension, which must be even
+Unlike positional embeddings that are **added** to token vectors, RoPE changes the vectors through rotations.
 
-Here’s how it works:
-
-**1. Create positions and rotation frequencies**
+## 1. Input shape
 
 ```python
-pos = torch.arange(S).unsqueeze(1).float()
+B, S, D = q.shape
 ```
 
-Creates positions `0, 1, ..., S-1`, with shape `[S, 1]`.
+The code expects `q` and `k` to have shape:
+
+```text
+[B, S, D]
+```
+
+where:
+
+- **B**: batch size
+- **S**: sequence length
+- **D**: vector dimension, typically the attention head dimension
+
+`D` needs to be **even**, because the function groups adjacent elements into pairs:
+
+```text
+(x₀, x₁), (x₂, x₃), (x₄, x₅), ...
+```
+
+Each pair gets rotated independently.
+
+## 2. Generate token positions
 
 ```python
-dim = torch.arange(0, D, 2).float()
+pos = torch.arange(S, device=q.device).unsqueeze(1).float()
+```
+
+For a sequence of length `4`, this produces:
+
+```text
+[[0],
+ [1],
+ [2],
+ [3]]
+```
+
+Its shape is `[S, 1]`.
+
+- `torch.arange(S)` creates position indices from `0` to `S - 1`.
+- `device=q.device` puts them on the same device as `q`.
+- `unsqueeze(1)` adds a dimension so positions can broadcast against the rotation frequencies.
+- `.float()` converts them to floating-point numbers.
+
+## 3. Generate one frequency per pair
+
+```python
+dim = torch.arange(0, D, 2, device=q.device).float()
 freqs = 1.0 / (10000.0 ** (dim / D))
 ```
 
-Creates one frequency for each coordinate pair: `(0, 1)`, `(2, 3)`, etc. Earlier pairs rotate faster; later pairs rotate more slowly.
-
-For example, with `D = 4`:
+For `D = 8`:
 
 ```text
-coordinate pair:  (0, 1)   (2, 3)
-frequency:           1       0.01
+dim   = [0, 2, 4, 6]
+freqs = [1, 0.1, 0.01, 0.001]
 ```
 
-**2. Calculate rotation angles**
+There are `D / 2` frequencies—one for each pair of vector elements.
+
+The frequency of pair `i` is:
+
+\[
+\omega_i = 10000^{-2i/D}
+\]
+
+So the first pair rotates quickly as position increases, while later pairs rotate more slowly. These different rates let the vector encode position across multiple scales.
+
+## 4. Calculate rotation angles
 
 ```python
 angles = pos * freqs
+cos_a = torch.cos(angles)
+sin_a = torch.sin(angles)
 ```
 
-Broadcasting produces shape `[S, D/2]`. Each angle is:
+For token position `s` and pair `i`, the rotation angle is:
 
+\[
+\theta_{s,i} = s \cdot \omega_i
+\]
 
+Broadcasting combines:
 
-$$
+```text
+pos:    [S, 1]
+freqs:     [D/2]
+```
 
-\theta_{p,i} = p \cdot 10000^{-2i/D}
+to produce:
 
-$$
+```text
+angles: [S, D/2]
+cos_a:  [S, D/2]
+sin_a:  [S, D/2]
+```
 
+Angles are in **radians**.
 
+For example, with `D = 4`, the frequencies are `[1, 0.01]`:
 
-So at position `2`, the example above gives angles `[2, 0.02]` radians. At position `0`, every angle is zero, so the vectors stay unchanged.
+| Token position | Angle for pair `(x₀, x₁)` | Angle for pair `(x₂, x₃)` |
+|---|---:|---:|
+| 0 | 0 | 0 |
+| 1 | 1 | 0.01 |
+| 2 | 2 | 0.02 |
 
-**3. Rotate each coordinate pair**
+At position `0`, all angles are zero, so the vector is unchanged.
+
+## 5. Rotate the pairs
 
 ```python
-x1, x2 = x[..., 0::2], x[..., 1::2]
+def rotate(x):
+    x1, x2 = x[..., 0::2], x[..., 1::2]
 ```
 
-Splits the vector into even and odd coordinates. Each pair then undergoes a standard 2D rotation:
+These slices separate the even-indexed and odd-indexed elements:
 
+```text
+x  = [a, b, c, d, e, f]
 
+x1 = [a, c, e]
+x2 = [b, d, f]
+```
 
-$$
+Both `x1` and `x2` have shape `[B, S, D/2]`.
 
+Then:
+
+```python
+x1 * cos_a - x2 * sin_a
+x1 * sin_a + x2 * cos_a
+```
+
+implements the standard 2D rotation:
+
+\[
 \begin{aligned}
-x'_1 &= x_1\cos\theta - x_2\sin\theta \\
-x'_2 &= x_1\sin\theta + x_2\cos\theta
+a' &= a\cos\theta - b\sin\theta \\
+b' &= a\sin\theta + b\cos\theta
 \end{aligned}
+\]
 
-$$
+Equivalently:
 
+\[
+\begin{bmatrix}
+a'\\
+b'
+\end{bmatrix}
+=
+\begin{bmatrix}
+\cos\theta & -\sin\theta\\
+\sin\theta & \cos\theta
+\end{bmatrix}
+\begin{bmatrix}
+a\\
+b
+\end{bmatrix}
+\]
 
+The `[S, D/2]` sine and cosine tensors broadcast across the batch dimension, so every batch item uses the same rotation for a given sequence position.
 
-The cosine and sine tensors broadcast across the batch.
+### Reassemble the vector
 
 ```python
 torch.stack([...], dim=-1).flatten(-2)
 ```
 
-Interleaves the rotated coordinates back into their original order:
+`stack` puts each rotated pair back together:
 
 ```text
-[x′₀, x′₁, x′₂, x′₃, ...]
+[B, S, D/2, 2]
 ```
 
-The result retains shape `[B, S, D]`.
+Then `flatten(-2)` merges the last two dimensions:
 
-**4. Apply the rotations to both queries and keys**
+```text
+[B, S, D]
+```
+
+This restores the original ordering:
+
+```text
+[a′, b′, c′, d′, e′, f′]
+```
+
+## 6. Apply the rotations to queries and keys
 
 ```python
 return rotate(q), rotate(k)
 ```
 
-Why rotate both? Attention compares queries and keys using dot products. These rotations make those comparisons depend on the **relative distance between token positions**: the interaction between positions `p` and `t` involves a rotation proportional to `t - p`.
+The function returns the position-encoded queries and keys, with the same shapes as the inputs.
 
-`math` is unused in this code.
+## Why this helps attention
 
-## Try it interactively
+Attention compares queries and keys using dot products:
 
-```torchcode-visual
-rope
-```
+\[
+\text{score}(p,t) = q_p^\top k_t
+\]
+
+With RoPE, a query at position `p` and a key at position `t` are rotated before that comparison:
+
+\[
+\tilde q_p = R_p q_p,
+\qquad
+\tilde k_t = R_t k_t
+\]
+
+Their dot product becomes:
+
+\[
+\tilde q_p^\top \tilde k_t
+=
+q_p^\top R_p^\top R_t k_t
+=
+q_p^\top R_{t-p} k_t
+\]
+
+The important part is **`t - p`**: the positional effect depends on the **relative distance between the tokens**.
+
+So RoPE gives attention access to relative position information while preserving each vector’s length, apart from floating-point rounding.
+
+### Practical notes
+
+- This implementation assumes `q` and `k` have the same shape and device.
+- `D` must be even.
+- Positions always start at `0`. During cached autoregressive generation, you would need to supply the actual position offset rather than restarting from zero.
+- The sine and cosine tensors are computed in `float32`, which can promote `float16` or `bfloat16` inputs to `float32` in this implementation.
+
+**In short:** the function rotates adjacent pairs of query/key features by position-dependent angles, making attention sensitive to how far apart tokens are.

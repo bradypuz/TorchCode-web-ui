@@ -3,12 +3,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, BookOpen, Check, ChevronDown, Clock3, Code2, History, Plus, RefreshCw } from 'lucide-react';
 import s from './problem-history.module.css';
+import { isManuallyFlagged, lessonState } from './journeyProgress';
 
 export type HistoryProblem = {
   id: number; task_id: string; title: string; difficulty: string;
   success: boolean; passed: number; total: number; created_at: string;
   hint_used: boolean; failed_tests: string[];
-  attempts: number; solved: boolean; needs_review: boolean;
+  attempts: number; solved: boolean; needs_review: boolean; manual_review?: boolean;
 };
 type Submission = {
   id: number; success: boolean; passed: number; total: number;
@@ -74,14 +75,16 @@ function ProblemRow({ item, user, busyReview, onSolution, onReview }: Omit<Props
   }
 
   const panelId = `problem-submissions-${item.task_id}`;
-  const status = item.needs_review ? 'Needs review' : item.solved ? 'Solved' : 'In progress';
+  const status = lessonState(undefined, item);
+  const solved = status === 'Solved';
+  const manuallyFlagged = isManuallyFlagged(item);
   return <article className={s.row} aria-label={`${item.title} practice history`}>
     <div className={s.summary}>
-      <div className={s.problem}><span className={item.solved ? s.solvedIcon : s.workingIcon}>{item.solved ? <Check size={18} /> : <Code2 size={18} />}</span><div><h3>{item.title}</h3><p>{item.difficulty}<span>·</span><time dateTime={item.created_at}>Last tried {new Date(item.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time></p></div></div>
-      <div className={s.result}><span className={item.needs_review ? s.reviewBadge : item.solved ? s.solvedBadge : s.workingBadge}>{status}</span><small>Latest: {item.passed}/{item.total} tests passed</small></div>
+      <div className={s.problem}><span className={solved ? s.solvedIcon : s.workingIcon}>{solved ? <Check size={18} /> : item.needs_review ? <RefreshCw size={18} /> : <Code2 size={18} />}</span><div><h3>{item.title}</h3><p>{item.difficulty}<span>·</span><time dateTime={item.created_at}>Last tried {new Date(item.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time></p></div></div>
+      <div className={s.result}><div className={s.resultBadges}><span className={solved ? s.solvedBadge : item.needs_review ? s.reviewBadge : s.workingBadge}>{status}</span>{solved && item.needs_review && <span className={s.reviewBadge}>Needs more practice</span>}</div><small>Latest: {item.passed}/{item.total} tests passed</small></div>
       <div className={s.actions}><a href={`http://localhost:3000/?task=${encodeURIComponent(item.task_id)}&user=${encodeURIComponent(user)}`} target="_blank" rel="noreferrer">Practice<ArrowRight size={13} /></a><button onClick={() => onSolution(item.task_id)} aria-label={`Solution for ${item.task_id}`}><BookOpen size={13} />Solution</button></div>
     </div>
-    <div className={s.rowFooter}><button className={s.expandButton} aria-expanded={expanded} aria-controls={panelId} aria-label={`${expanded ? 'Hide' : 'Show'} ${item.attempts} ${item.attempts === 1 ? 'submission' : 'submissions'} for ${item.title}`} onClick={() => { if (!expanded) { setLoading(true); setLoadingMore(false); setError(''); } setExpanded(value => !value); }}><History size={13} />{item.attempts} {item.attempts === 1 ? 'submission' : 'submissions'}<ChevronDown size={13} className={expanded ? s.expandedArrow : ''} /></button><button className={s.reviewButton} disabled={busyReview === item.task_id} onClick={() => onReview(item.task_id, !item.needs_review)}>{item.needs_review ? <Check size={12} /> : <Plus size={12} />}{item.needs_review ? 'In review' : 'Review later'}</button></div>
+    <div className={s.rowFooter}><button className={s.expandButton} aria-expanded={expanded} aria-controls={panelId} aria-label={`${expanded ? 'Hide' : 'Show'} ${item.attempts} ${item.attempts === 1 ? 'submission' : 'submissions'} for ${item.title}`} onClick={() => { if (!expanded) { setLoading(true); setLoadingMore(false); setError(''); } setExpanded(value => !value); }}><History size={13} />{item.attempts} {item.attempts === 1 ? 'submission' : 'submissions'}<ChevronDown size={13} className={expanded ? s.expandedArrow : ''} /></button><button className={s.reviewButton} disabled={Boolean(busyReview)} onClick={() => onReview(item.task_id, !manuallyFlagged)}>{manuallyFlagged ? <RefreshCw size={12} /> : <Plus size={12} />}{busyReview === item.task_id ? 'Updating…' : manuallyFlagged ? 'Clear my practice flag' : item.needs_review ? 'Add practice flag' : 'Needs more practice'}</button></div>
     {expanded && <section id={panelId} className={s.submissions} aria-label={`Submissions for ${item.title}`}>
       {loading ? <p className={s.loading} role="status"><RefreshCw size={14} />Loading your submissions…</p> : <>
         <ol>{rows.map(row => <li key={row.id}><span className={row.success ? s.accepted : s.retry}><Check size={13} />{row.success ? 'Passed' : row.total === 0 ? 'Execution failed' : 'Keep practicing'}</span><strong>{row.passed}/{row.total}<small>tests passed</small></strong><span className={s.submissionDate}><Clock3 size={12} /><time dateTime={row.created_at}>{dateLabel(row.created_at)}</time>{row.hint_used && <b>Hint used</b>}</span><span className={s.submissionId}>#{row.id}</span></li>)}</ol>

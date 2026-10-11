@@ -1,20 +1,42 @@
-# Blockwise attention with online softmax
+This function computes **scaled dot-product attention** without building the entire attention matrix at once. It processes queries, keys, and values in small blocks and uses an **online softmax** to combine the results correctly.
 
-This computes **scaled dot-product attention**, processing small blocks at a time so it doesn’t need to build the full attention matrix.
+That is the central idea behind FlashAttention—although this Python implementation is not the optimized, fused GPU kernel used by actual FlashAttention.
 
-Mathematically, it computes:
+## 1. What it computes
 
+Ordinary attention is:
 
+\[
+\operatorname{Attention}(Q,K,V)
+=
+\operatorname{softmax}\left(\frac{QK^\top}{\sqrt D}\right)V
+\]
 
-$$
+Here, all three inputs are assumed to have shape:
 
-\text{output}=\operatorname{softmax}\left(\frac{QK^\top}{\sqrt D}\right)V
+```text
+Q, K, V: [B, S, D]
 
-$$
+B = batch size
+S = sequence length
+D = embedding / feature dimension
+```
 
+Conceptually:
 
+- **Q — queries:** What each position is looking for.
+- **K — keys:** What each position can be matched against.
+- **V — values:** The information to combine after deciding which positions matter.
 
-The ordinary implementation would be:
+For each query, the function compares it with every key, turns those comparisons into softmax weights, and returns a weighted sum of the values.
+
+The output has shape `[B, S, D]`.
+
+---
+
+## 2. Why process attention in blocks?
+
+A straightforward implementation would look like:
 
 ```python
 scores = torch.bmm(Q, K.transpose(1, 2)) / math.sqrt(D)
@@ -22,157 +44,242 @@ weights = torch.softmax(scores, dim=-1)
 output = torch.bmm(weights, V)
 ```
 
-Your code computes the same mathematical result, up to floating-point rounding, using a **running softmax**.
+The problem is that `scores` and `weights` each have shape `[B, S, S]`. Their memory usage grows **quadratically with sequence length**.
 
-**The inputs**
+Your implementation instead computes small pieces of that matrix:
 
-`Q`, `K`, and `V` have shape `(B, S, D)`:
+```python
+for i in range(0, S, block_size):
+    ...
+    for j in range(0, S, block_size):
+        ...
+```
 
-- `B`: batch size.
-- `S`: sequence length.
-- `D`: vector dimension.
+- The outer loop selects a **block of queries**.
+- The inner loop visits **every block of keys and values**.
 
-Each query in `Q` is compared with every key in `K`. Those comparison scores determine how much each corresponding value in `V` contributes to the output.
+With `block_size=32`, each score block is usually only `[B, 32, 32]`, rather than `[B, S, S]`.
 
-**1. Select a block of queries**
+**Important:** Blocking does not remove any attention connections. Every query still attends to every key.
+
+---
+
+## 3. The outer loop: select queries and initialize running statistics
+
+```python
+B, S, D = Q.shape
+output = torch.zeros_like(Q)
+```
+
+This reads the input dimensions and allocates the final result.
 
 ```python
 for i in range(0, S, block_size):
     qi = Q[:, i:i+block_size]
+    bs_q = qi.shape[1]
 ```
 
-`qi` has shape `(B, bs_q, D)`. Usually `bs_q == block_size`; the final block can be smaller.
+`qi` is the current query block, with shape:
 
-For these queries, the code creates three running quantities:
+```text
+[B, bs_q, D]
+```
 
-| Variable | Meaning | Shape |
-|---|---|---|
-| `row_max` | Largest score seen so far for each query | `(B, bs_q, 1)` |
-| `row_sum` | Sum of shifted exponentials seen so far | `(B, bs_q, 1)` |
-| `acc` | Sum of values weighted by those exponentials | `(B, bs_q, D)` |
+`bs_q` may be smaller than `block_size` for the final block.
 
-They start at `-inf`, zero, and zero because no keys have been processed yet.
-
-**2. Compare these queries with every key block**
+For each query in this block, the function initializes three running quantities:
 
 ```python
-for j in range(0, S, block_size):
-    kj = K[:, j:j+block_size]
-    vj = V[:, j:j+block_size]
-    scores = torch.bmm(qi, kj.transpose(1, 2)) / math.sqrt(D)
+row_max = torch.full((B, bs_q, 1), float('-inf'), device=Q.device)
+row_sum = torch.zeros(B, bs_q, 1, device=Q.device)
+acc = torch.zeros(B, bs_q, D, device=Q.device)
 ```
 
-If both blocks contain 32 positions, `scores` has shape `(B, 32, 32)`.
+| Variable | Meaning |
+|---|---|
+| `row_max` | Largest attention score seen so far for each query |
+| `row_sum` | Running sum of exponentiated scores, used as the softmax denominator |
+| `acc` | Running weighted sum of values, used as the numerator |
 
-Each entry is:
+The trailing dimension of size `1` lets `row_max` and `row_sum` broadcast across keys or value features.
 
+---
 
+## 4. The inner loop: score one key block
 
-$$
+```python
+kj = K[:, j:j+block_size]
+vj = V[:, j:j+block_size]
+```
 
-s_{q,k}=\frac{q\cdot k}{\sqrt D}
+These select matching blocks of keys and values:
 
-$$
+```text
+kj: [B, bs_k, D]
+vj: [B, bs_k, D]
+```
 
+Then:
 
+```python
+scores = torch.bmm(qi, kj.transpose(1, 2)) / math.sqrt(D)
+```
 
-Larger scores give that key’s value more influence. Dividing by $\sqrt D$ helps control the scale of the scores.
+`torch.bmm` performs a separate matrix multiplication for each batch item:
 
-Every query block visits **all** key blocks, so attention covers the entire sequence.
+```text
+[B, bs_q, D] × [B, D, bs_k]
+                  ↓
+           [B, bs_q, bs_k]
+```
 
-**3. Compute stable exponentials**
+Each score is a query–key dot product divided by \(\sqrt D\). This scaling helps keep the scores from becoming excessively large as the feature dimension increases.
 
-Softmax can be written as:
+---
 
+## 5. The key idea: online, numerically stable softmax
 
+For one query, softmax normally computes:
 
-$$
+\[
+p_t=\frac{e^{s_t}}{\sum_u e^{s_u}}
+\]
 
-p_k=\frac{e^{s_k-m}}{\sum_t e^{s_t-m}}
+For numerical stability, we subtract the largest score \(m\):
 
-$$
+\[
+p_t=\frac{e^{s_t-m}}{\sum_u e^{s_u-m}}
+\]
 
+Subtracting the same number from every score does not change softmax, but it helps prevent exponential overflow.
 
+The challenge here is that **the function has not seen all scores yet**. A later key block might contain a larger maximum.
 
-Subtracting the same $m$ from every score leaves the result unchanged. Choosing the maximum score avoids overflowing the exponential.
+### Find the updated maximum
 
 ```python
 block_max = scores.max(dim=-1, keepdim=True).values
 new_max = torch.maximum(row_max, block_max)
-exp_scores = torch.exp(scores - new_max)
 ```
 
-Here, `new_max` is the largest score across both previously processed keys and the current block.
+For each query:
 
-**4. Rescale the previous contributions**
+- `block_max` is the largest score in the current key block.
+- `new_max` is the largest score across all blocks processed so far.
 
-This is the crucial step:
+### Rescale earlier contributions
 
 ```python
 correction = torch.exp(row_max - new_max)
 ```
 
-Previous contributions used `row_max` as their reference. If the maximum increases, they must be converted to the new reference:
+Previous contributions were calculated relative to the old maximum. They must now be expressed relative to the new maximum.
 
+The reason this works is:
 
-
-$$
-
+\[
+e^{s-m_{\text{new}}}
+=
 e^{s-m_{\text{old}}}
 \underbrace{e^{m_{\text{old}}-m_{\text{new}}}}_{\text{correction}}
-=e^{s-m_{\text{new}}}
+\]
 
-$$
+For example, if the running maximum increases from `5` to `7`, all previous exponential contributions are multiplied by \(e^{-2}\).
 
+### Add the current block
 
+```python
+exp_scores = torch.exp(scores - new_max)
+```
 
-For example, if the maximum rises from 5 to 7, all previous contributions are multiplied by $e^{-2}$.
-
-Then the code adds the current block’s contributions:
+These are the current block’s **unnormalized** attention weights.
 
 ```python
 acc = acc * correction + torch.bmm(exp_scores, vj)
+```
+
+This updates the weighted-value numerator:
+
+1. Rescale the old numerator.
+2. Add the current block’s weighted values.
+
+```python
 row_sum = row_sum * correction + exp_scores.sum(dim=-1, keepdim=True)
+```
+
+This updates the softmax denominator:
+
+1. Rescale the old denominator.
+2. Add the current block’s exponential sum.
+
+Finally:
+
+```python
 row_max = new_max
 ```
 
-For each query, the running state now represents:
+The updated maximum is carried into the next iteration.
 
+On the first iteration, `row_max` is `-inf`, so for finite scores:
 
+```python
+correction = exp(-inf) = 0
+```
 
-$$
+This makes the initial update work naturally.
 
-\text{acc}=\sum_{\text{processed }k}e^{s_k-m}v_k,
-\qquad
-\text{row\_sum}=\sum_{\text{processed }k}e^{s_k-m}
+### The invariant
 
-$$
+After any number of key blocks, for each query the variables represent:
 
+\[
+\text{row\_sum}
+=
+\sum_{\text{keys seen}} e^{s_t-m}
+\]
 
+\[
+\text{acc}
+=
+\sum_{\text{keys seen}} e^{s_t-m}v_t
+\]
 
-On the first block, `correction` is zero because the old maximum is `-inf`.
+where \(m=\text{row\_max}\).
 
-**5. Normalize once all keys have been processed**
+That invariant is what allows the function to compute full-sequence attention without storing all the scores.
+
+---
+
+## 6. Normalize and write the result
+
+Once every key block has been processed:
 
 ```python
 output[:, i:i+block_size] = acc / row_sum
 ```
 
-This produces:
+For each query, this gives:
 
+\[
+\frac{\sum_t e^{s_t-m}v_t}
+     {\sum_t e^{s_t-m}}
+=
+\sum_t \operatorname{softmax}(s)_t\,v_t
+\]
 
+So the result is mathematically the same as ordinary attention, up to floating-point rounding.
 
-$$
+The outer loop repeats this process for the remaining query blocks.
 
-\frac{\sum_k e^{s_k-m}v_k}{\sum_k e^{s_k-m}}
-=\sum_k \operatorname{softmax}(s)_k\,v_k
+---
 
-$$
+## Practical caveats
 
+- **It saves intermediate memory, not asymptotic computation.** It still evaluates every query–key pair, so computation remains approximately \(O(BS^2D)\).
+- **It is FlashAttention-inspired, not an optimized FlashAttention implementation.** Actual FlashAttention uses fused GPU kernels and carefully manages GPU memory access. Python loops and separate PyTorch operations do not provide those same speed benefits.
+- **It is not causal attention.** There is no mask, so each position can attend to future positions as well as past ones.
+- **There is no explicit multi-head dimension.** The function operates on three-dimensional tensors; multiple heads would need to be handled separately or folded into the batch dimension.
+- **Mixed precision needs care.** `row_max`, `row_sum`, and `acc` use PyTorch’s default floating-point dtype, typically `float32`. With `float16` or `bfloat16` inputs, this can cause a dtype mismatch in `torch.bmm(exp_scores, vj)`.
+- **Training memory is a separate concern.** Standard autograd may retain intermediates from the loop. Actual FlashAttention also uses a memory-efficient backward implementation.
 
-
-You cannot independently softmax each block and add the results: every block must share the normalization across **all keys**.
-
-This illustrates FlashAttention’s block processing and running-softmax idea. Production FlashAttention uses GPU implementations designed to reduce memory transfers; these Python loops do not provide those performance guarantees. [FlashAttention paper](https://arxiv.org/abs/2205.14135)
-
-The computation still requires $O(BS^2D)$ arithmetic. It has no causal mask, and its default accumulator dtypes can cause a mismatch with FP16/BF16 inputs.
+**In short:** the function computes ordinary attention block by block, maintaining a running maximum, denominator, and weighted-value numerator so that the final result is correct without constructing the full attention matrix.
