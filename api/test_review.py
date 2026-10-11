@@ -37,7 +37,7 @@ class ReviewRankingTests(unittest.TestCase):
     def review(self, task_id, **kwargs):
         return next(entry for entry in self.dashboard(**kwargs)["reviews"] if entry["id"] == task_id)
 
-    def test_marking_today_solve_updates_a_full_cached_plan_immediately(self):
+    def test_marking_today_solve_keeps_done_and_credit_in_a_full_cached_plan(self):
         self.dashboard()
         self.store.record_attempt("local", "relu", PASS, at=NOW)
         self.assertEqual(self.dashboard()["goal"]["completed"], 1)
@@ -46,12 +46,74 @@ class ReviewRankingTests(unittest.TestCase):
         dashboard = self.dashboard()
         self.assertEqual(len(dashboard["plan"]), 3)
         card = next(entry for entry in dashboard["plan"] if entry["id"] == "relu")
-        self.assertEqual(card["kind"], "review")
-        self.assertFalse(card["completed"])
+        self.assertEqual(card["kind"], "new")
+        self.assertTrue(card["completed"])
         self.assertTrue(card["review_factors"]["manual"])
-        self.assertEqual(dashboard["goal"]["completed"], 0)
+        self.assertEqual(dashboard["goal"]["completed"], 1)
+        self.assertEqual(dashboard["stats"]["today_completed"], 1)
+        self.assertNotIn("relu", [entry["id"] for entry in dashboard["reviews"]])
         self.assertEqual(dashboard["stats"]["solved"], 1)
         self.assertEqual(dashboard["curriculum"][0]["ready"], 0)
+
+    def test_today_flagged_solve_returns_as_unfinished_review_tomorrow(self):
+        self.dashboard()
+        self.store.record_attempt("local", "relu", PASS, at=NOW)
+        self.store.mark_review("local", "relu", True)
+        tomorrow = self.dashboard(now=NOW + timedelta(days=1))
+        review = next(entry for entry in tomorrow["plan"] if entry["id"] == "relu")
+        self.assertEqual(review["kind"], "review")
+        self.assertFalse(review["completed"])
+        self.assertTrue(review["manual_review"])
+        self.assertEqual(tomorrow["goal"]["completed"], 0)
+        self.assertEqual(tomorrow["stats"]["today_completed"], 0)
+
+    def test_toggling_confidence_flag_does_not_change_earned_daily_credit(self):
+        self.dashboard()
+        self.store.record_attempt("local", "relu", PASS, at=NOW)
+        for flagged in (True, False, True):
+            self.store.mark_review("local", "relu", flagged)
+            dashboard = self.dashboard()
+            card = next(entry for entry in dashboard["plan"] if entry["id"] == "relu")
+            self.assertTrue(card["completed"])
+            self.assertEqual(card["manual_review"], flagged)
+            self.assertEqual(dashboard["goal"], {"target": 3, "completed": 1})
+            self.assertEqual(dashboard["stats"]["today_completed"], 1)
+
+    def test_confidence_flag_on_unsolved_lesson_does_not_earn_done(self):
+        self.store.mark_review("local", "embedding", True)
+        dashboard = self.dashboard()
+        card = next(entry for entry in dashboard["plan"] if entry["id"] == "embedding")
+        self.assertFalse(card["completed"])
+        self.assertEqual(dashboard["goal"]["completed"], 0)
+        self.assertEqual(dashboard["stats"]["today_completed"], 0)
+
+    def test_scheduled_review_must_be_solved_on_the_new_day_to_earn_done(self):
+        self.store.record_attempt("local", "relu", PASS, at=NOW - timedelta(days=3))
+        before = self.dashboard()
+        card = next(entry for entry in before["plan"] if entry["id"] == "relu")
+        self.assertEqual(card["kind"], "review")
+        self.assertFalse(card["completed"])
+        self.store.record_attempt("local", "relu", PASS, at=NOW)
+        self.store.mark_review("local", "relu", True)
+        after = self.dashboard()
+        card = next(entry for entry in after["plan"] if entry["id"] == "relu")
+        self.assertEqual(card["kind"], "review")
+        self.assertTrue(card["completed"])
+        self.assertEqual(after["goal"]["completed"], 1)
+
+    def test_flagged_completion_uses_local_day_across_dst_fall_back(self):
+        at = datetime(2026, 11, 1, 7, 30, tzinfo=timezone.utc)  # 00:30 PDT
+        self.store.record_attempt("local", "relu", PASS, at=at)
+        self.store.mark_review("local", "relu", True)
+        today = self.dashboard(now=at + timedelta(hours=24))  # 23:30 PST same day
+        self.assertEqual(today["day"], "2026-11-01")
+        self.assertEqual(today["stats"]["today_completed"], 1)
+        self.assertEqual(today["reviews"], [])
+        tomorrow = self.dashboard(now=at + timedelta(hours=25))  # 00:30 PST next day
+        self.assertEqual(tomorrow["day"], "2026-11-02")
+        self.assertEqual(tomorrow["stats"]["today_completed"], 0)
+        self.assertEqual(tomorrow["reviews"][0]["id"], "relu")
+        self.assertFalse(tomorrow["reviews"][0]["completed"])
 
     def test_new_flag_replaces_incomplete_choice_and_clearing_removes_stale_review(self):
         self.assertNotIn("embedding", [entry["id"] for entry in self.dashboard()["plan"]])

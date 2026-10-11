@@ -421,7 +421,7 @@ class PracticeStore:
 
             by_task: dict[str, list[dict[str, Any]]] = {}
             web_by_task: dict[str, list[dict[str, Any]]] = {}
-            latest_today: dict[str, dict[str, Any]] = {}
+            completed: set[str] = set()
             day_counts: dict[date, int] = {}
             for attempt in attempts:
                 by_task.setdefault(attempt["task_id"], []).append(attempt)
@@ -429,8 +429,8 @@ class PracticeStore:
                     web_by_task.setdefault(attempt["task_id"], []).append(attempt)
                 attempt_day = parse_timestamp(attempt["created_at"]).astimezone(zone).date()
                 day_counts[attempt_day] = day_counts.get(attempt_day, 0) + 1
-                if attempt_day == today:
-                    latest_today[attempt["task_id"]] = attempt
+                if attempt_day == today and attempt["success"]:
+                    completed.add(attempt["task_id"])
             def review_due_day(task_id: str) -> date | None:
                 state = states.get(task_id, {})
                 # Calendar days, rather than elapsed UTC hours, keep a next-day
@@ -442,13 +442,9 @@ class PracticeStore:
                     return parse_timestamp(state["review_due_at"]).astimezone(zone).date()
                 return None
 
-            completed = {
-                task_id for task_id, attempt in latest_today.items()
-                if attempt["success"] and not states.get(task_id, {}).get("manual_review")
-                and not (states.get(task_id, {}).get("needs_review")
-                         and review_due_day(task_id) is not None
-                         and review_due_day(task_id) <= today)
-            }
+            # A successful solve earns today's completion. Confidence flags
+            # and later retry mistakes inform future practice; they cannot
+            # undo earned daily credit or schedule the same lesson again today.
             order = {task_id: index for index, task_id in enumerate(CURRICULUM)}
             task_order = sorted(TASKS, key=lambda task_id: (order.get(task_id, 999), task_id))
             metrics = {

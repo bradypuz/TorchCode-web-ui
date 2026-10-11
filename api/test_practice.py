@@ -187,17 +187,22 @@ class PracticeStoreTests(unittest.TestCase):
         self.assertTrue(summary["success"])
         self.assertEqual(summary["created_at"], NOW.isoformat())
 
-    def test_failed_reattempt_removes_today_completion_and_keeps_ever_solved(self):
+    def test_failed_reattempt_keeps_earned_today_completion_and_future_review_signal(self):
         self.dashboard()
         self.store.record_attempt("local", "relu", SUCCESS, at=NOW)
         self.store.record_attempt("local", "relu", FAILURE, at=NOW + timedelta(minutes=1))
         dashboard = self.dashboard()
-        self.assertFalse(dashboard["plan"][0]["completed"])
-        self.assertEqual(dashboard["goal"]["completed"], 0)
-        self.assertEqual(dashboard["stats"]["today_completed"], 0)
+        self.assertTrue(dashboard["plan"][0]["completed"])
+        self.assertEqual(dashboard["goal"]["completed"], 1)
+        self.assertEqual(dashboard["stats"]["today_completed"], 1)
         self.assertEqual(dashboard["stats"]["solved"], 1)
         self.assertEqual(dashboard["progress"][0]["status"], "solved")
-        self.assertEqual(dashboard["reviews"][0]["id"], "relu")
+        self.assertTrue(dashboard["progress"][0]["needs_review"])
+        self.assertEqual(dashboard["reviews"], [])
+        tomorrow = self.store.dashboard(day="2026-10-11")
+        self.assertEqual(tomorrow["reviews"][0]["id"], "relu")
+        self.assertFalse(tomorrow["reviews"][0]["completed"])
+        self.assertEqual(tomorrow["stats"]["today_completed"], 0)
 
     def test_hint_usage_and_spaced_reviews(self):
         self.store.record_attempt("local", "softmax", SUCCESS, hint_used=True, at=NOW)
@@ -324,14 +329,18 @@ class PracticeStoreTests(unittest.TestCase):
         self.store.mark_review("local", "embedding", False)
         self.assertEqual(self.store.dashboard(timezone="UTC")["reviews"], [])
 
-    def test_manual_review_of_today_success_is_visible_until_a_clean_pass(self):
-        self.store.record_attempt("local", "relu", SUCCESS)
+    def test_manual_review_of_today_success_keeps_done_and_is_visible_tomorrow(self):
+        self.store.record_attempt("local", "relu", SUCCESS, at=NOW)
         self.store.mark_review("local", "relu", True)
-        dashboard = self.store.dashboard()
-        self.assertEqual(dashboard["reviews"][0]["id"], "relu")
-        self.assertEqual(dashboard["stats"]["today_completed"], 0)
-        self.store.record_attempt("local", "relu", SUCCESS)
-        dashboard = self.store.dashboard()
+        dashboard = self.dashboard()
+        self.assertEqual(dashboard["reviews"], [])
+        self.assertEqual(dashboard["stats"]["today_completed"], 1)
+        self.assertTrue(next(entry for entry in dashboard["plan"] if entry["id"] == "relu")["completed"])
+        tomorrow = self.store.dashboard(day="2026-10-11", now=NOW + timedelta(days=1))
+        self.assertEqual(tomorrow["reviews"][0]["id"], "relu")
+        self.assertFalse(tomorrow["reviews"][0]["completed"])
+        self.store.record_attempt("local", "relu", SUCCESS, at=NOW + timedelta(minutes=1))
+        dashboard = self.dashboard()
         self.assertEqual(dashboard["reviews"], [])
         self.assertEqual(dashboard["stats"]["today_completed"], 1)
 
