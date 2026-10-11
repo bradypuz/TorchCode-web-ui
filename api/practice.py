@@ -609,7 +609,6 @@ class PracticeStore:
                             "solved": sum(bool(states.get(task_id, {}).get("solved"))
                                           for task_id in week["task_ids"]),
                             "ready": sum(bool(states.get(task_id, {}).get("solved"))
-                                         and not states.get(task_id, {}).get("needs_review")
                                          for task_id in week["task_ids"]),
                             "total": len(week["task_ids"])} for week in STUDY_WEEKS],
         }

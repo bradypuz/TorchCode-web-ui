@@ -173,7 +173,7 @@ function JourneyForUser({ weeks: studyWeeks, tasks, progress, history, user, onS
   return <section className={s.journey} aria-label="Your learning journey">
     <div className={s.journeyHeader}>
       <div><span className={s.eyebrow}><Compass size={13} /> A LITTLE FURTHER, EVERY DAY</span><h1>Your journey<span aria-hidden="true">✦</span></h1><p>Four worlds to explore. {total} problems to make your own.</p></div>
-      <div className={s.courseProgress}><span className={s.courseProgressIcon}><Trophy size={22} /></span><div><strong>{solved}<span> / {total}</span></strong><small>skills practiced &amp; ready</small></div></div>
+      <div className={s.courseProgress}><span className={s.courseProgressIcon}><Trophy size={22} /></span><div><strong>{solved}<span> / {total}</span></strong><small>problems solved</small></div></div>
     </div>
 
     <div className={s.mapOptions}>
@@ -187,11 +187,11 @@ function JourneyForUser({ weeks: studyWeeks, tasks, progress, history, user, onS
         const region = WORLDS[index];
         const complete = week.total > 0 && week.solved >= week.total;
         const current = selectedWeek?.week === week.week;
-        return <button key={week.week} className={`${s.world} ${region.theme} ${current ? s.selectedWorld : ''}`} onClick={() => selectWeek(week)} aria-pressed={current} aria-label={`Week ${week.week}: ${week.focus}, ${week.solved} of ${week.total} skills ready`}>
+        return <button key={week.week} className={`${s.world} ${region.theme} ${current ? s.selectedWorld : ''}`} onClick={() => selectWeek(week)} aria-pressed={current} aria-label={`Week ${week.week}: ${week.focus}, ${week.solved} of ${week.total} problems solved`}>
           <div className={s.worldTop}><span>WEEK {String(week.week).padStart(2, '0')}</span><span className={s.worldStar}>{complete ? <Star size={16} fill="currentColor" /> : <Flag size={13} />}</span></div>
           <WorldArt world={index} />
           <div className={s.worldText}><strong>{week.focus}</strong><span>{region.name}</span></div>
-          <div className={s.worldProgress}><progress value={week.solved} max={Math.max(1, week.total)} aria-label={`Week ${week.week} skills ready`} /><span>{week.solved}/{week.total}{complete && <Check size={11} />}</span></div>
+          <div className={s.worldProgress}><progress value={week.solved} max={Math.max(1, week.total)} aria-label={`Week ${week.week} problems solved`} /><span>{week.solved}/{week.total}{complete && <Check size={11} />}</span></div>
           {current && <span className={s.worldSelected}>EXPLORING THIS WEEK</span>}
         </button>;
       })}
@@ -199,7 +199,7 @@ function JourneyForUser({ weeks: studyWeeks, tasks, progress, history, user, onS
 
     {selectedWeek && selectedTask && <div className={`${s.expedition} ${world.theme}`}>
       <div className={s.mapBoard}>
-        <div className={s.mapHeading}><div><span>WEEK {String(selectedWeek.week).padStart(2, '0')} <span aria-hidden="true">/</span> {world.name}</span><h2>{selectedWeek.focus}</h2><p>{world.caption}.</p></div><span className={s.weekFraction} aria-label={`${selectedWeek.solved} of ${selectedWeek.total} skills ready`}>{selectedWeek.solved}<small>/{selectedWeek.total}</small>{selectedWeek.solved >= selectedWeek.total ? <Star size={14} fill="currentColor" /> : <Flag size={14} />}</span></div>
+        <div className={s.mapHeading}><div><span>WEEK {String(selectedWeek.week).padStart(2, '0')} <span aria-hidden="true">/</span> {world.name}</span><h2>{selectedWeek.focus}</h2><p>{world.caption}.</p></div><span className={s.weekFraction} aria-label={`${selectedWeek.solved} of ${selectedWeek.total} problems solved`}>{selectedWeek.solved}<small>/{selectedWeek.total}</small>{selectedWeek.solved >= selectedWeek.total ? <Star size={14} fill="currentColor" /> : <Flag size={14} />}</span></div>
         <div className={s.mapLegend} aria-label="Lesson status legend"><span><i className={s.legendSolved} />Solved</span><span><i className={s.legendReview} />Needs more practice</span><span><i className={s.legendNew} />Ready to explore</span></div>
         <div ref={pathAreaRef} className={s.pathArea}>
           <div className={s.mapDecorations} aria-hidden="true"><span className={s.flowerOne}>✦</span><span className={s.flowerTwo}>✦</span><svg className={s.tinyTree} viewBox="0 0 40 55"><path d="M20 36v15" stroke="var(--tree-trunk)" strokeWidth="5" strokeLinecap="round" /><path d="m4 36 16-26 16 26Z" fill="var(--tree)" /><path d="m8 23 12-21 12 21Z" fill="var(--tree-light)" /></svg></div>
@@ -214,17 +214,18 @@ function JourneyForUser({ weeks: studyWeeks, tasks, progress, history, user, onS
               const next = nextId === id;
               const style = { '--desktop-col': desktopRow % 2 ? 3 - index % 3 : index % 3 + 1, '--desktop-row': desktopRow + 1, '--mobile-col': mobileRow % 2 ? 2 - index % 2 : index % 2 + 1, '--mobile-row': mobileRow + 1 } as CSSProperties;
               return <li key={id} className={s.lesson} style={style}>
-                <button className={`${s.lessonButton} ${chosen ? s.chosenLesson : ''} ${isSolved(id) ? s.solvedLesson : ''} ${needsReview(id) ? s.reviewLesson : ''}`} onClick={() => setSelection({ week: selectedWeek.week, id })} aria-current={chosen ? 'step' : undefined} aria-controls={detailId} aria-label={`Lesson ${index + 1}: ${task?.title || id}, ${state}${next ? ', recommended next lesson' : ''}${showCodeLines ? `, ${codeLineLabel(task?.implementation_lines, true)}` : ''}`}>
-                  <span data-journey-node className={s.lessonMedallion}>{needsReview(id) ? <RefreshCw size={21} /> : isSolved(id) ? <Check size={24} strokeWidth={3} /> : <span>{index + 1}</span>}{isSolved(id) && <Star className={s.lessonStar} size={14} fill="currentColor" />}</span>
+                <button className={`${s.lessonButton} ${chosen ? s.chosenLesson : ''} ${isSolved(id) ? s.solvedLesson : needsReview(id) ? s.reviewLesson : ''}`} onClick={() => setSelection({ week: selectedWeek.week, id })} aria-current={chosen ? 'step' : undefined} aria-controls={detailId} aria-label={`Lesson ${index + 1}: ${task?.title || id}, ${state}${isSolved(id) && needsReview(id) ? ', Needs more practice reminder' : ''}${next ? ', recommended next lesson' : ''}${showCodeLines ? `, ${codeLineLabel(task?.implementation_lines, true)}` : ''}`}>
+                  <span data-journey-node className={s.lessonMedallion}>{isSolved(id) ? <Check size={24} strokeWidth={3} /> : needsReview(id) ? <RefreshCw size={21} /> : <span>{index + 1}</span>}{isSolved(id) && <Star className={s.lessonStar} size={14} fill="currentColor" />}</span>
                   <span className={s.lessonName}>{task?.title || id.replaceAll('_', ' ')}</span>
                   {next && state !== 'Needs more practice' ? <span className={s.nextLesson}><Sparkles size={9} /> UP NEXT</span> : <span className={s.lessonStatus}>{state === 'Not started' ? `LESSON ${String(index + 1).padStart(2, '0')}` : state}</span>}
+                  {isSolved(id) && needsReview(id) && <span className={s.lessonReminder}><RefreshCw size={9} aria-hidden="true" />Needs more practice</span>}
                   {showCodeLines && <span className={s.codeLineBadge} data-implementation-lines={task?.implementation_lines ?? 'unavailable'}><Code2 size={11} aria-hidden="true" />{codeLineLabel(task?.implementation_lines)}</span>}
                 </button>
               </li>;
             })}
           </ol>
         </div>
-        <div className={s.finishLine}><span className={s.finishIcon}><Flag size={19} /></span><div><strong>{selectedWeek.solved >= selectedWeek.total ? 'A whole world, completed!' : 'Every lesson is a little victory.'}</strong><span>{selectedWeek.solved >= selectedWeek.total ? 'Revisit a favorite or explore the next week.' : `${selectedWeek.total - selectedWeek.solved} to learn or refresh this week. Your past wins still count.`}</span></div>{selectedWeek.solved >= selectedWeek.total && <Star size={22} className={s.finishStar} fill="currentColor" />}</div>
+        <div className={s.finishLine}><span className={s.finishIcon}><Flag size={19} /></span><div><strong>{selectedWeek.solved >= selectedWeek.total ? 'A whole world, completed!' : 'Every lesson is a little victory.'}</strong><span>{selectedWeek.solved >= selectedWeek.total ? 'Revisit a favorite or explore the next week.' : `${selectedWeek.total - selectedWeek.solved} more to solve this week. You’ve got this.`}</span></div>{selectedWeek.solved >= selectedWeek.total && <Star size={22} className={s.finishStar} fill="currentColor" />}</div>
       </div>
 
       <aside className={s.lessonPanel} id={detailId} aria-label="Selected lesson details">
@@ -232,8 +233,8 @@ function JourneyForUser({ weeks: studyWeeks, tasks, progress, history, user, onS
         <div className={s.panelContent}>
           <div className={s.panelEyebrow}><span>WEEK {selectedWeek.week} <ChevronRight size={10} /> LESSON {String(selectedNumber).padStart(2, '0')}</span><span className={s.difficulty}>{selectedTask.difficulty}</span></div>
           <h3>{selectedTask.title}</h3>
-          <span className={`${s.stateBadge} ${selectedState === 'Needs more practice' ? s.reviewState : selectedState === 'Solved' ? s.solvedState : ''}`}>{selectedState === 'Solved' ? <Check size={13} /> : selectedState === 'Needs more practice' ? <RefreshCw size={12} /> : <span className={s.stateDot} />}{selectedState}</span>
-          <p className={s.panelIntro}>{selectedState === 'Solved' ? 'Look at you go. Keep this skill fresh with another run.' : selectedState === 'Needs more practice' ? 'A familiar trail worth walking again. Give this one a little extra practice.' : selectedState === 'In progress' ? 'You’ve already taken the first step. Pick up where you left off.' : 'Start with a small idea. Turn it into working PyTorch, one test at a time.'}</p>
+          <div className={s.statusBadges}><span className={`${s.stateBadge} ${selectedState === 'Needs more practice' ? s.reviewState : selectedState === 'Solved' ? s.solvedState : ''}`}>{selectedState === 'Solved' ? <Check size={13} /> : selectedState === 'Needs more practice' ? <RefreshCw size={12} /> : <span className={s.stateDot} />}{selectedState}</span>{selectedState === 'Solved' && needsReview(selectedTask.id) && <span className={`${s.stateBadge} ${s.reviewState}`}><RefreshCw size={12} />Needs more practice</span>}</div>
+          <p className={s.panelIntro}>{selectedState === 'Solved' ? needsReview(selectedTask.id) ? 'You’ve solved this problem. Your practice reminder helps bring it back in a future daily mission.' : 'Look at you go. Keep this skill fresh with another run.' : selectedState === 'Needs more practice' ? 'A familiar trail worth walking again. Give this one a little extra practice.' : selectedState === 'In progress' ? 'You’ve already taken the first step. Pick up where you left off.' : 'Start with a small idea. Turn it into working PyTorch, one test at a time.'}</p>
           {showCodeLines && <div className={s.panelCodeLines}><Code2 size={17} aria-hidden="true" /><div><strong>{codeLineLabel(selectedTask.implementation_lines, true)}</strong><span>Based on the reference solution</span></div></div>}
           <a className={s.practiceButton} href={`http://localhost:3000/?task=${encodeURIComponent(selectedTask.id)}&user=${encodeURIComponent(user)}`} target="_blank" rel="noreferrer">Practice It!<ArrowRight size={17} /></a>
           <button className={s.solutionButton} onClick={() => onSolution(selectedTask.id)}><BookOpen size={15} /> Solution</button>

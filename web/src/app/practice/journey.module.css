@@ -78,6 +78,8 @@
 .journey .lessonMedallion { position: relative; display: grid; place-items: center; flex-shrink: 0; width: 53px; height: 51px; border-radius: 50%; color: var(--world-ink); background: #fffefa; border: 2px solid var(--world-edge); box-shadow: 0 4px 0 var(--world-edge); font-size: 21px; font-weight: 750; transition: transform .2s, box-shadow .2s; }
 .journey .lessonName { display: block; flex-shrink: 0; overflow-wrap: anywhere; max-width: 100%; font-size: 12px; font-weight: 720; letter-spacing: -.1px; line-height: 1.45; margin-top: 12px; min-height: 15px; }
 .journey .lessonStatus { flex-shrink: 0; font-size: 7px; line-height: 1.4; letter-spacing: .45px; color: #738268; margin-top: 4px; }
+.journey .lessonReminder { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 3px; max-width: 100%; border-radius: 5px; padding: 3px 5px; margin-top: 5px; color: #796394; background: #f0eaf7; font-size: 7px; line-height: 1.4; }
+.journey .lessonReminder svg { flex-shrink: 0; }
 .journey .nextLesson { display: flex; flex-shrink: 0; align-items: center; gap: 3px; font-size: 6px; letter-spacing: .75px; color: var(--world-ink); font-weight: 800; line-height: 1.3; margin-top: 4px; }
 .journey .chosenLesson .lessonMedallion { background: var(--world-ink); color: #fff; border-color: var(--world-ink); box-shadow: 0 4px 0 var(--node-shadow), 0 0 0 5px var(--world-tint), 0 0 0 7px var(--node); }
 .journey .chosenLesson .lessonName { color: var(--world-ink); }
@@ -102,6 +104,7 @@
 .journey .difficulty { border: 1px solid #e6e8dc; border-radius: 5px; padding: 2px 5px; color: #707c63; background: #fafbf5; font-size: 8px; line-height: 1.5; }
 .journey .panelContent h3 { font-size: 24px; line-height: 1.25; font-weight: 770; letter-spacing: -.8px; margin: 13px 0 12px; overflow-wrap: anywhere; }
 .journey .stateBadge { display: inline-flex; align-items: center; gap: 5px; color: #7f713f; background: #f5f0dc; border: 1px solid #eee5c8; border-radius: 6px; padding: 4px 7px; font-size: 8px; font-weight: 650; line-height: 1.3; }
+.journey .statusBadges { display: flex; flex-wrap: wrap; gap: 6px; }
 .journey .stateDot { background: currentColor; height: 5px; width: 5px; border-radius: 50%; }
 .journey .stateBadge.solvedState { color: #5b7e39; background: #eff5e1; border-color: #dfeacb; }
 .journey .stateBadge.reviewState { color: #796394; background: #f0eaf7; border-color: #e1d7ed; }

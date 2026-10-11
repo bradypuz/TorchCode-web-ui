@@ -198,6 +198,8 @@ class PracticeStoreTests(unittest.TestCase):
         self.assertEqual(dashboard["stats"]["solved"], 1)
         self.assertEqual(dashboard["progress"][0]["status"], "solved")
         self.assertTrue(dashboard["progress"][0]["needs_review"])
+        self.assertEqual(dashboard["curriculum"][0]["solved"], 1)
+        self.assertEqual(dashboard["curriculum"][0]["ready"], 1)
         self.assertEqual(dashboard["reviews"], [])
         tomorrow = self.store.dashboard(day="2026-10-11")
         self.assertEqual(tomorrow["reviews"][0]["id"], "relu")

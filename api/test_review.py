@@ -53,7 +53,27 @@ class ReviewRankingTests(unittest.TestCase):
         self.assertEqual(dashboard["stats"]["today_completed"], 1)
         self.assertNotIn("relu", [entry["id"] for entry in dashboard["reviews"]])
         self.assertEqual(dashboard["stats"]["solved"], 1)
-        self.assertEqual(dashboard["curriculum"][0]["ready"], 0)
+        self.assertEqual(dashboard["curriculum"][0]["ready"], 1)
+
+    def test_journey_keeps_earned_solve_after_flag_and_later_mistakes(self):
+        self.store.record_attempt("local", "relu", PASS, at=NOW - timedelta(days=1))
+        self.store.mark_review("local", "relu", True)
+        self.store.record_attempt("local", "relu", FAIL, at=NOW)
+        dashboard = self.dashboard()
+        progress = next(entry for entry in dashboard["progress"] if entry["id"] == "relu")
+        self.assertEqual(progress["status"], "solved")
+        self.assertTrue(progress["needs_review"])
+        self.assertTrue(progress["manual_review"])
+        self.assertEqual(dashboard["curriculum"][0]["solved"], 1)
+        self.assertEqual(dashboard["curriculum"][0]["ready"], 1)
+        self.assertEqual(dashboard["stats"]["solved"], 1)
+        summary = dashboard["problem_history"][0]
+        self.assertFalse(summary["success"])
+        self.assertTrue(summary["solved"])
+        review = next(entry for entry in dashboard["plan"] if entry["id"] == "relu")
+        self.assertEqual(review["kind"], "review")
+        self.assertFalse(review["completed"])
+        self.assertTrue(review["manual_review"])
 
     def test_today_flagged_solve_returns_as_unfinished_review_tomorrow(self):
         self.dashboard()

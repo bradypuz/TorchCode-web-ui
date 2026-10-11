@@ -230,6 +230,7 @@
 .libraryCard { border: 1px solid #e0e7d6; border-bottom-width: 3px; background: #fff; border-radius: 17px; padding: 20px; }
 .libraryCard:hover { transform: translateY(-3px); box-shadow: 0 6px 20px #2c491309; }
 .libraryCardTop { display: flex; align-items: center; justify-content: space-between; }
+.libraryStatuses { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .librarySolved { display: inline-flex; align-items: center; gap: 4px; color: #90aa6f; font-size: 9px; }
 .libraryReview { display: inline-flex; align-items: center; gap: 4px; color: #9078a7; font-size: 9px; }
 .libraryGlyph { background: #f2f6e8; width: 51px; height: 51px; border-radius: 15px; display: grid; place-items: center; color: #a2b97b; margin: 21px 0 17px; }

@@ -1,6 +1,6 @@
 export type LessonState = 'Solved' | 'Needs more practice' | 'In progress' | 'Not started';
 type Progress = { id: string; status: string; needs_review: boolean; attempts: number };
-type History = { task_id: string; solved: boolean; needs_review: boolean; attempts: number };
+type History = { task_id: string; solved: boolean; success?: boolean; needs_review: boolean; attempts: number };
 type Week = { task_ids: string[]; solved: number; total: number };
 type ReviewFlags = { needs_review: boolean; manual_review?: boolean };
 
@@ -9,9 +9,11 @@ export function isManuallyFlagged(progress?: ReviewFlags, history?: ReviewFlags)
 }
 
 export function lessonState(progress?: Progress, history?: History): LessonState {
+  // A successful submission is an earned completion. Practice reminders and
+  // later mistakes affect future reviews, not whether this lesson was solved.
+  if (progress?.status === 'solved' || history?.solved || history?.success) return 'Solved';
   // Current progress is authoritative when a learner clears an earlier flag.
   if (progress?.needs_review ?? history?.needs_review ?? false) return 'Needs more practice';
-  if (progress?.status === 'solved' || history?.solved) return 'Solved';
   if (progress?.status === 'attempted' || (progress?.attempts ?? 0) > 0 || (history?.attempts ?? 0) > 0) return 'In progress';
   return 'Not started';
 }
