@@ -9,7 +9,9 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { ArrowRight, BookOpen, Check, Code2, Copy, Maximize2, Minimize2, RefreshCw, Sparkles, X } from 'lucide-react';
 import s from './solution.module.css';
-import ExplanationVisual, { VISUAL_KINDS } from './ExplanationVisual';
+import ExplanationVisual from './ExplanationVisual';
+import { normalizeExplanationMarkdown } from './explanationMarkdown';
+import { EXPLANATION_VISUALS } from './explanationVisuals';
 import MermaidDiagram, { MermaidVisibilityContext } from './MermaidDiagram';
 
 type Solution = {
@@ -33,21 +35,19 @@ export default function SolutionDialog({ taskId, user, onClose }: Props) {
   const [fullscreen, setFullscreen] = useState(false);
   const codeTabRef = useRef<HTMLButtonElement>(null);
   const explanationTabRef = useRef<HTMLButtonElement>(null);
-  // Stable renderer identities preserve example state during dashboard refreshes.
+  const explanationMarkdown = useMemo(() => normalizeExplanationMarkdown(solution?.explanation ?? ''), [solution?.explanation]);
+  const visualKind = EXPLANATION_VISUALS[taskId];
+  // Stable renderer identities preserve diagram state during dashboard refreshes.
   const markdownComponents = useMemo<Components>(() => ({
     table: ({ children }) => <div className={s.tableWrap}><table>{children}</table></div>,
     pre: ({ children }) => {
       const child = Children.toArray(children)[0];
-      if (isValidElement<{ className?: string; children?: React.ReactNode }>(child) && child.props.className === 'language-torchcode-visual') {
-        const kind = String(child.props.children).trim();
-        if ((VISUAL_KINDS as readonly string[]).includes(kind)) return <ExplanationVisual kind={kind} taskId={taskId} />;
-      }
       if (isValidElement<{ className?: string; children?: React.ReactNode }>(child) && child.props.className === 'language-mermaid') {
         return <MermaidDiagram source={String(child.props.children).replace(/\n$/, '')} />;
       }
       return <pre>{children}</pre>;
     },
-  }), [taskId]);
+  }), []);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -122,11 +122,15 @@ export default function SolutionDialog({ taskId, user, onClose }: Props) {
         <div className={s.editor}><Editor language="python" theme="vs-dark" value={solution.code} loading={<span className={s.editorLoading}>Loading code…</span>} options={{ readOnly: true, domReadOnly: true, minimap: { enabled: false }, automaticLayout: true, fontSize: 13, lineHeight: 23, scrollBeyondLastLine: false, padding: { top: 17, bottom: 17 }, renderLineHighlight: 'none', contextmenu: false, wordWrap: 'on', scrollbar: { verticalScrollbarSize: 7, horizontalScrollbarSize: 7 } }} /></div>
       </section>
       <section id="solution-explanation-panel" role="tabpanel" aria-labelledby="solution-explanation-tab" hidden={tab !== 'explanation'} className={s.explanationPanel} tabIndex={0}>
-        <MermaidVisibilityContext.Provider value={tab === 'explanation'}><div className={s.explanation}><ReactMarkdown
+        <MermaidVisibilityContext.Provider value={tab === 'explanation'}><div className={s.explanation}><article className={s.answer}><ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[rehypeKatex]}
           components={markdownComponents}
-        >{solution.explanation}</ReactMarkdown></div></MermaidVisibilityContext.Provider>
+        >{explanationMarkdown}</ReactMarkdown></article>{visualKind && <details className={s.supplement}>
+          <summary>Explore an interactive example</summary>
+          <p className={s.supplementNote}>A supplemental practice tool for this concept, separate from the explanation above.</p>
+          <ExplanationVisual kind={visualKind} taskId={taskId} />
+        </details>}</div></MermaidVisibilityContext.Provider>
       </section>
     </>}
 

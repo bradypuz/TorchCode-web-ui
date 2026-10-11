@@ -6,12 +6,13 @@ import s from './practice.module.css';
 import SolutionDialog from './SolutionDialog';
 import JourneyMap from './JourneyMap';
 import ProblemHistory, { type HistoryProblem } from './ProblemHistory';
+import { currentJourneyWeeks } from './journeyProgress';
 
 const API = 'http://localhost:8000/api';
 type Profile = { id: string; name: string };
-type Problem = { id: string; title: string; difficulty: string; topic: string; reason: string; kind: 'new' | 'review'; completed: boolean; estimated_minutes: number; passed: number | null; total: number | null; last_attempt_at: string | null; needs_review: boolean; study_week: number | null; study_focus: string };
+type Problem = { id: string; title: string; difficulty: string; topic: string; reason: string; kind: 'new' | 'review'; completed: boolean; estimated_minutes: number; passed: number | null; total: number | null; last_attempt_at: string | null; needs_review: boolean; study_week: number | null; study_focus: string; review_score?: number; estimated_retention?: number | null; review_factors?: { manual: boolean; mistakes: number; forgetting: number } };
 type Attempt = { id: number; task_id: string; title: string; difficulty: string; success: boolean; passed: number; total: number; created_at: string; hint_used: boolean; failed_tests: string[] };
-type Progress = { id: string; status: string; needs_review: boolean; attempts: number };
+type Progress = { id: string; status: string; needs_review: boolean; manual_review?: boolean; attempts: number };
 type Dashboard = {
   profile: Profile; goal: { target: number; completed: number };
   stats: { solved: number; total: number; streak: number; attempts: number; xp: number; today_completed: number };
@@ -57,6 +58,11 @@ function PracticeLink({ id, user, onSolution, children = 'Practice It!', quiet =
   return <div className={s.problemActions}><a className={quiet ? s.quietButton : s.practiceButton} href={`http://localhost:3000/?task=${encodeURIComponent(id)}&user=${encodeURIComponent(user)}`} target="_blank" rel="noreferrer">{children}<ArrowRight size={16} /></a><button className={s.solutionButton} onClick={() => onSolution(id)} aria-label={`Solution for ${id}`}><BookOpen size={14} />Solution</button></div>;
 }
 
+function ReviewPriority({ item }: { item: Problem }) {
+  if (item.kind !== 'review' || item.completed || typeof item.review_score !== 'number' || !Number.isFinite(item.review_score)) return null;
+  return <span className={s.reviewPriority} title="Recommendation score based on your review flags, recent test mistakes, and time since practice."><Target size={11} aria-hidden="true" />Review priority <strong>{Math.round(Math.max(0, Math.min(100, item.review_score)))}<small>/100</small></strong></span>;
+}
+
 export default function PracticePage() {
   const [data, setData] = useState<Dashboard | null>(null);
   const [solutionId, setSolutionId] = useState<string | null>(null);
@@ -76,6 +82,7 @@ export default function PracticePage() {
   const [busyReview, setBusyReview] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const requestVersion = useRef(0);
+  const activeUser = useRef('local');
   const modalRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -91,6 +98,7 @@ export default function PracticePage() {
       // Use defaults when the browser does not allow local storage.
     }
     setUser(initialUser);
+    activeUser.current = initialUser;
     setGoal(Number.isInteger(storedGoal) && storedGoal >= 1 && storedGoal <= 10 ? storedGoal : 3);
     setShowCodeLines(storedCodeLines);
     setReady(true);
@@ -143,7 +151,8 @@ export default function PracticePage() {
 
   function changeUser(id: string) {
     requestVersion.current++;
-    setUser(id); setData(null); setError(''); setQuery(''); setFilter('all');
+    activeUser.current = id;
+    setUser(id); setData(null); setError(''); setQuery(''); setFilter('all'); setBusyReview('');
     const value = Number(localStorage.getItem(`torchcode_goal_${id}`) || 3);
     setGoal(value >= 1 && value <= 10 ? value : 3);
     localStorage.setItem('torchcode_practice_user', id);
@@ -169,16 +178,28 @@ export default function PracticePage() {
   async function flagReview(taskId: string, needsReview: boolean) {
     setBusyReview(taskId);
     try {
-      await request('/practice/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: user, task_id: taskId, needs_review: needsReview }) });
+      const saved = await request<{ needs_review: boolean; manual_review: boolean }>('/practice/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: user, task_id: taskId, needs_review: needsReview }) });
+      if (activeUser.current !== user) return;
+      // Invalidate an older poll and reflect the saved flag before loading the
+      // recalculated recommendations. Historical successes and XP stay intact.
+      requestVersion.current++;
+      setData(previous => previous?.profile.id !== user ? previous : {
+        ...previous,
+        progress: previous.progress.some(item => item.id === taskId)
+          ? previous.progress.map(item => item.id === taskId ? { ...item, needs_review: saved.needs_review, manual_review: saved.manual_review } : item)
+          : [...previous.progress, { id: taskId, status: 'not_started', needs_review: saved.needs_review, manual_review: saved.manual_review, attempts: 0 }],
+        problem_history: previous.problem_history.map(item => item.task_id === taskId ? { ...item, needs_review: saved.needs_review, manual_review: saved.manual_review } : item),
+      });
       await refresh();
-    } catch (err) { setError(err instanceof Error ? err.message : 'Couldn’t update your review list.'); }
-    finally { setBusyReview(''); }
+    } catch (err) { if (activeUser.current === user) setError(err instanceof Error ? err.message : 'Couldn’t update your review list.'); }
+    finally { if (activeUser.current === user) setBusyReview(''); }
   }
 
   const progress = new Map(data?.progress.map(item => [item.id, item]));
+  const studyWeeks = data ? currentJourneyWeeks(data.curriculum, data.progress, data.problem_history || []) : [];
   const firstTask = data?.plan.find(item => !item.completed);
   const percent = data ? Math.min(100, Math.round(data.goal.completed / Math.max(1, data.goal.target) * 100)) : 0;
-  const visibleHistory = (data?.problem_history || []).filter(item => (filter === 'all' || (filter === 'solved' ? item.solved : !item.solved || item.needs_review)) && item.title.toLowerCase().includes(query.toLowerCase()));
+  const visibleHistory = (data?.problem_history || []).filter(item => (filter === 'all' || (filter === 'solved' ? item.solved && !item.needs_review : !item.solved || item.needs_review)) && item.title.toLowerCase().includes(query.toLowerCase()));
   const visibleTasks = tasks.filter(item => (filter === 'all' || item.difficulty.toLowerCase() === filter) && item.title.toLowerCase().includes(query.toLowerCase()));
   const nav = [{ id: 'today' as const, label: 'Today’s practice', icon: LayoutGrid }, { id: 'review' as const, label: 'Review lab', icon: RefreshCw }, { id: 'history' as const, label: 'Your journey', icon: History }, { id: 'library' as const, label: 'Problem library', icon: BookOpen }];
 
@@ -187,8 +208,9 @@ export default function PracticePage() {
   const reviewSection = <section className={s.reviewSection}>
     <div className={s.sectionHeading}><div><span className={s.eyebrow}>A LITTLE RECALL GOES A LONG WAY</span><h2>Bring it back <span className={s.countPill}>{data?.reviews.length || 0}</span></h2><p>Turn those tricky moments into second nature.</p></div><RefreshCw className={s.reviewHeadingIcon} size={25} /></div>
     {data?.reviews.length ? <div className={s.reviewList}>{data.reviews.map(item => <article className={s.reviewCard} key={item.id}>
-      <div className={s.reviewGlyph}><RefreshCw size={21} /></div><div className={s.reviewText}><h3>{item.title}</h3><p>{item.reason}</p>{item.total != null && <span className={s.reviewScore}>{item.passed}/{item.total} tests last attempt</span>}</div><PracticeLink id={item.id} user={user} onSolution={setSolutionId} quiet>Try again</PracticeLink>
+      <div className={s.reviewGlyph}><RefreshCw size={21} /></div><div className={s.reviewText}><h3>{item.title}</h3><p>{item.reason}</p><ReviewPriority item={item} />{item.total != null && <span className={s.reviewScore}>{item.passed}/{item.total} tests last attempt</span>}</div><PracticeLink id={item.id} user={user} onSolution={setSolutionId} quiet>Try again</PracticeLink>
     </article>)}</div> : <div className={s.reviewEmpty}><div className={s.reviewGlyph}><Leaf size={25} /></div><div><h3>A fresh start looks good on you.</h3><p>Tricky problems will land here for a little extra practice. Solved problems return when it’s time to refresh.</p></div><span className={s.seedDecoration} aria-hidden="true">✦</span></div>}
+    <details className={s.reviewMethod}><summary>How are reviews picked?</summary><p>Your “Needs more practice” flags, recent test mistakes, and time since practice determine review priority. A forgetting curve estimates when familiar skills need a refresh. Confident practice spaces future reviews farther apart; mistakes bring them back sooner.</p><p>Clearing your flag removes your personal reminder. Practice results can still recommend the problem for review. These scores are scheduling estimates; your past successes and earned XP always stay in your history.</p></details>
   </section>;
 
   const historySection = <section className={s.historySection}>
@@ -221,11 +243,11 @@ export default function PracticePage() {
 
             <div className={s.overviewStrip}><div><span className={s.overviewIcon}><CircleCheck size={20} /></span><strong>{data.stats.solved}<small>/{data.stats.total}</small></strong><span>problems solved</span></div><div><span className={s.overviewIconAmber}><Flame size={20} /></span><strong>{data.stats.streak}<small> days</small></strong><span>showing up</span></div><div><span className={s.overviewIconPurple}><RefreshCw size={19} /></span><strong>{data.reviews.length}</strong><span>ready for review</span></div><div><span className={s.overviewIconBlue}><Target size={20} /></span><strong>{data.stats.attempts}</strong><span>steps forward</span></div></div>
 
-            <section className={s.studyTrack} aria-label="README Suggested Study Plan"><div className={s.studyTrackHeading}><BookOpen size={15} /><span>YOUR STUDY PATH</span><small>Following the README’s Suggested Study Plan</small></div><div className={s.studyWeeks}>{data.curriculum?.map(week => <div key={week.week} className={week.solved === week.total ? s.finishedWeek : firstTask?.study_week === week.week ? s.currentWeek : ''}><span>{week.solved === week.total ? <Check size={12} /> : `0${week.week}`}</span><div><small>WEEK {week.week}</small><strong>{week.focus}</strong></div><i>{week.solved}/{week.total}</i></div>)}</div></section>
+            <section className={s.studyTrack} aria-label="README Suggested Study Plan"><div className={s.studyTrackHeading}><BookOpen size={15} /><span>YOUR STUDY PATH</span><small>Following the README’s Suggested Study Plan</small></div><div className={s.studyWeeks}>{studyWeeks.map(week => <div key={week.week} className={week.solved === week.total ? s.finishedWeek : firstTask?.study_week === week.week ? s.currentWeek : ''}><span>{week.solved === week.total ? <Check size={12} /> : `0${week.week}`}</span><div><small>WEEK {week.week}</small><strong>{week.focus}</strong></div><i>{week.solved}/{week.total}</i></div>)}</div></section>
             <div className={s.dailyGrid}>
               <section className={s.missionSection}><div className={s.sectionHeading}><div><span className={s.eyebrow}>{new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' }).toUpperCase()}</span><h2>Your daily mission <span aria-hidden="true">✦</span></h2></div><div className={s.goalControl}><span>My goal</span><button disabled={goal <= 1} onClick={() => changeGoal(goal - 1)} aria-label="Fewer daily problems"><Minus size={14} /></button><output aria-label="Daily problem goal">{goal}</output><button disabled={goal >= 10} onClick={() => changeGoal(goal + 1)} aria-label="More daily problems"><Plus size={14} /></button></div></div>
                 <p className={s.missionIntro}>Fresh problems follow your study path. Reviews keep it fresh. {refreshing && <span className={s.syncDot}>Updating…</span>}</p>
-                <div className={s.missionCards}>{data.plan.map((item, index) => <article className={`${s.missionCard} ${item.completed ? s.completedCard : ''}`} key={item.id}><div className={s.missionNumber}>{item.completed ? <Check size={20} strokeWidth={3} /> : String(index + 1).padStart(2, '0')}</div><div className={s.missionInfo}><div className={s.problemMeta}><span className={item.kind === 'review' ? s.reviewBadge : s.newBadge}>{item.completed ? 'DONE TODAY' : item.kind === 'review' ? 'REFRESH YOUR SKILLS' : 'LEARN SOMETHING NEW'}</span><span className={`${s.difficulty} ${s[item.difficulty.toLowerCase()]}`}>{item.difficulty}</span></div><h3>{item.title}</h3><p>{item.reason}</p><span className={s.timeEstimate}><Clock3 size={13} /> ~{item.estimated_minutes} min <span>·</span> {item.study_week ? `Week ${item.study_week} · ${item.study_focus}` : item.topic}</span></div><PracticeLink id={item.id} user={user} onSolution={setSolutionId} quiet={item.completed}>{item.completed ? 'Practice again' : 'Practice It!'}</PracticeLink></article>)}</div>
+                <div className={s.missionCards}>{data.plan.map((item, index) => <article className={`${s.missionCard} ${item.completed ? s.completedCard : ''}`} key={item.id}><div className={s.missionNumber}>{item.completed ? <Check size={20} strokeWidth={3} /> : String(index + 1).padStart(2, '0')}</div><div className={s.missionInfo}><div className={s.problemMeta}><span className={item.kind === 'review' ? s.reviewBadge : s.newBadge}>{item.completed ? 'DONE TODAY' : item.kind === 'review' ? 'REFRESH YOUR SKILLS' : 'LEARN SOMETHING NEW'}</span><span className={`${s.difficulty} ${s[item.difficulty.toLowerCase()]}`}>{item.difficulty}</span></div><h3>{item.title}</h3><p>{item.reason}</p><ReviewPriority item={item} /><span className={s.timeEstimate}><Clock3 size={13} /> ~{item.estimated_minutes} min <span>·</span> {item.study_week ? `Week ${item.study_week} · ${item.study_focus}` : item.topic}</span></div><PracticeLink id={item.id} user={user} onSolution={setSolutionId} quiet={item.completed}>{item.completed ? 'Practice again' : 'Practice It!'}</PracticeLink></article>)}</div>
                 {!data.plan.length && <div className={s.reviewEmpty}><Trophy size={30} /><p>You’re caught up with your study plan and reviews. Head to the library for an optional challenge.</p></div>}
                 <p className={s.planNote}><Sparkles size={14} /> A mix of fresh challenges and timely reviews. Adjust your goal from 1–10.</p>
               </section>
@@ -234,9 +256,9 @@ export default function PracticePage() {
             </div>
             {reviewSection}{historySection}
           </>}
-          {section === 'review' && <><div className={s.pageHeading}><div className={s.pageHeadingIcon}><RefreshCw size={28} /></div><span className={s.eyebrow}>THE COMEBACK IS PART OF THE CLIMB</span><h1>Make it stick.</h1><p>Failed tests, hint-assisted solves, and skills due for a refresh.<br />A little recall today builds confidence for tomorrow.</p></div>{reviewSection}<div className={s.reviewExplainer}><Sparkles size={21} /><div><h3>Practice, pause, revisit.</h3><p>We bring tricky problems back sooner and space out confident solves. You can also choose “Review later” in your history whenever a concept feels shaky.</p></div></div></>}
+          {section === 'review' && <><div className={s.pageHeading}><div className={s.pageHeadingIcon}><RefreshCw size={28} /></div><span className={s.eyebrow}>THE COMEBACK IS PART OF THE CLIMB</span><h1>Make it stick.</h1><p>Failed tests, hint-assisted solves, and skills due for a refresh.<br />A little recall today builds confidence for tomorrow.</p></div>{reviewSection}<div className={s.reviewExplainer}><Sparkles size={21} /><div><h3>Practice, pause, revisit.</h3><p>Your flags, test mistakes, and time away shape your daily reviews. Choose “Needs more practice” whenever a concept feels shaky, then revisit it from Today’s practice.</p></div></div></>}
           {section === 'history' && <><JourneyMap key={user} weeks={data.curriculum} tasks={tasks} progress={data.progress} history={data.problem_history || []} user={user} onSolution={setSolutionId} onReview={(id, needsReview) => void flagReview(id, needsReview)} busyReview={busyReview} showCodeLines={showCodeLines} onShowCodeLines={changeCodeLines} />{historySection}</>}
-          {section === 'library' && <><div className={s.pageHeading}><span className={s.eyebrow}>A WORLD OF TENSORS TO EXPLORE</span><h1>Find your next challenge.</h1><p>{tasks.length} small adventures in PyTorch. Pick something that sparks your curiosity.</p></div><div className={s.filters}><div className={s.filterTabs}>{['all', 'easy', 'medium', 'hard'].map(value => <button key={value} className={filter === value ? s.selectedFilter : ''} onClick={() => setFilter(value)}>{value === 'all' ? 'All problems' : value[0].toUpperCase() + value.slice(1)}</button>)}</div><label className={s.search}><Search size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Find your next challenge…" aria-label="Search problem library" /></label></div><div className={s.libraryGrid}>{visibleTasks.map(task => <article className={s.libraryCard} key={task.id}><div className={s.libraryCardTop}><span className={`${s.difficulty} ${s[task.difficulty.toLowerCase()]}`}>{task.difficulty}</span>{progress.get(task.id)?.status === 'solved' && <span className={s.librarySolved}><CircleCheck size={14} /> Solved</span>}</div><div className={s.libraryGlyph}><Code2 size={26} /></div><h3>{task.title}</h3><p>{progress.get(task.id)?.attempts || 0} attempts{progress.get(task.id)?.needs_review ? ' · In your review list' : ''}</p><PracticeLink id={task.id} user={user} onSolution={setSolutionId}>Practice It!</PracticeLink></article>)}</div>{!visibleTasks.length && <p className={s.noResults}>No problems match your search.</p>}</>}
+          {section === 'library' && <><div className={s.pageHeading}><span className={s.eyebrow}>A WORLD OF TENSORS TO EXPLORE</span><h1>Find your next challenge.</h1><p>{tasks.length} small adventures in PyTorch. Pick something that sparks your curiosity.</p></div><div className={s.filters}><div className={s.filterTabs}>{['all', 'easy', 'medium', 'hard'].map(value => <button key={value} className={filter === value ? s.selectedFilter : ''} onClick={() => setFilter(value)}>{value === 'all' ? 'All problems' : value[0].toUpperCase() + value.slice(1)}</button>)}</div><label className={s.search}><Search size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Find your next challenge…" aria-label="Search problem library" /></label></div><div className={s.libraryGrid}>{visibleTasks.map(task => <article className={s.libraryCard} key={task.id}><div className={s.libraryCardTop}><span className={`${s.difficulty} ${s[task.difficulty.toLowerCase()]}`}>{task.difficulty}</span>{progress.get(task.id)?.needs_review ? <span className={s.libraryReview}><RefreshCw size={14} /> Needs more practice</span> : progress.get(task.id)?.status === 'solved' && <span className={s.librarySolved}><CircleCheck size={14} /> Solved</span>}</div><div className={s.libraryGlyph}><Code2 size={26} /></div><h3>{task.title}</h3><p>{progress.get(task.id)?.attempts || 0} attempts{progress.get(task.id)?.needs_review ? ' · In your review list' : ''}</p><PracticeLink id={task.id} user={user} onSolution={setSolutionId}>Practice It!</PracticeLink></article>)}</div>{!visibleTasks.length && <p className={s.noResults}>No problems match your search.</p>}</>}
           <footer className={s.footer}><span><Flame size={14} /> Made for small wins and big ideas.</span><button onClick={() => void refresh()} disabled={refreshing}><RefreshCw size={13} className={refreshing ? s.spin : ''} /> {refreshing ? 'Syncing…' : 'Refresh progress'}</button><span>Keep your curiosity burning.</span></footer>
         </>}
       </main>

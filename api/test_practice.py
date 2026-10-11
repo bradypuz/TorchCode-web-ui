@@ -140,7 +140,7 @@ class PracticeStoreTests(unittest.TestCase):
         dashboard = self.dashboard()
         latest = {key: value for key, value in dashboard["history"][0].items() if key != "source"}
         self.assertEqual(dashboard["problem_history"], [{
-            **latest, "attempts": 2, "solved": True, "needs_review": True,
+            **latest, "attempts": 2, "solved": True, "needs_review": True, "manual_review": False,
         }])
         summary = dashboard["problem_history"][0]
         self.assertFalse(summary["success"])

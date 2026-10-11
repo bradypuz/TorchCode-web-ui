@@ -1,8 +1,29 @@
-# Beam Search Decoding
+This function implements **beam search**: a way to generate a sequence while keeping several promising partial sequences at each step, instead of committing immediately to just one.
 
-This implements **beam search**: it builds a token sequence while keeping the `beam_width` highest-scoring partial sequences at each step.
+It can be used for tasks such as text generation, where a model predicts the next token given the tokens generated so far.
 
-Unlike greedy decoding, which chooses one next token, beam search keeps several possibilities so a promising alternative can win later.
+## 1. What the inputs mean
+
+```python
+def beam_search(log_prob_fn, start_token, max_len, beam_width, eos_token):
+```
+
+| Argument | Meaning |
+|---|---|
+| `log_prob_fn` | A function that takes a token sequence and returns a **1D tensor of log-probabilities for the next token**, one entry per vocabulary token. |
+| `start_token` | The token that begins every sequence. |
+| `max_len` | The maximum number of generation steps—so at most this many tokens are added after the start token. |
+| `beam_width` | How many promising partial sequences to keep at each step. |
+| `eos_token` | The end-of-sequence token, indicating that a sequence is finished. |
+
+For example, if the vocabulary has 1,000 tokens, `log_prob_fn(...)` should return a tensor of shape `(1000,)`.
+
+## 2. Initialize the search
+
+```python
+beams = [(0.0, [start_token])]
+completed = []
+```
 
 Each beam is a pair:
 
@@ -10,55 +31,155 @@ Each beam is a pair:
 (score, sequence)
 ```
 
-The score is the **sum of the tokens’ log probabilities**. Higher is better: `-1.0` is better than `-3.0`.
+Initially, there is only one sequence: `[start_token]`.
 
-Here’s the flow:
+Its score is `0.0` because no generated tokens have contributed any log-probabilities yet. `completed` will store finished sequences.
 
-1. **Start with one sequence.**
-   ```python
-   beams = [(0.0, [start_token])]
-   ```
-   Nothing has been generated yet, so its score is zero. `completed` holds sequences that reach the end token.
+## 3. Expand the current sequences
 
-2. **Generate up to `max_len` additional tokens.**
-   ```python
-   for _ in range(max_len):
-   ```
-   Each iteration extends the current sequences by one token.
+```python
+for _ in range(max_len):
+    candidates = []
+    for score, seq in beams:
+```
 
-3. **Expand each unfinished beam.**
-   ```python
-   log_probs = log_prob_fn(torch.tensor(seq))
-   topk_lp, topk_idx = log_probs.topk(beam_width)
-   ```
-   `log_prob_fn` takes the current sequence and returns a log probability for every possible next token. `topk` selects the best `beam_width` token choices and their scores.
+At every generation step, the function considers each current beam and builds possible extensions.
 
-   Each choice creates a new candidate:
-   ```python
-   (score + next_token_log_prob, seq + [next_token])
-   ```
+### If a sequence has ended, save it
 
-   For example, if a beam’s score is `-0.7` and a next token has log probability `-0.2`, the extended sequence gets score `-0.9`.
+```python
+if seq[-1] == eos_token:
+    completed.append((score, seq))
+    continue
+```
 
-4. **Keep the best candidates across all beams.**
-   ```python
-   candidates.sort(key=lambda x: x[0], reverse=True)
-   beams = candidates[:beam_width]
-   ```
-   There can be up to `beam_width²` candidates, but only the best `beam_width` survive.
+If the last token is the end token, this sequence is finished. It is saved and not expanded further.
 
-   A sequence ending in `eos_token` goes into `completed` and is no longer extended. If nothing can be extended, the loop stops.
+### Otherwise, predict the next token
 
-5. **Return the highest-scoring sequence.**
-   ```python
-   all_seqs = completed + beams
-   ```
-   It compares finished sequences with those still active, then returns the best sequence—including the start token and EOS token, if present.
+```python
+log_probs = log_prob_fn(torch.tensor(seq))
+```
 
-A few details matter:
+The sequence is converted to a PyTorch tensor and passed to the prediction function.
 
-- `log_prob_fn` must return a **1D vector of log probabilities**, with at least `beam_width` entries.
-- `max_len` counts newly generated tokens, so the returned sequence can contain `max_len + 1` tokens.
-- The result may lack EOS if the length limit is reached.
-- Summing log probabilities often favors shorter sequences; there is no length normalization here.
-- Beam search can discard a path that would eventually be best, so it does not guarantee the globally optimal sequence.
+Conceptually, the output contains:
+
+```text
+log P(token 0 | seq)
+log P(token 1 | seq)
+log P(token 2 | seq)
+...
+```
+
+### Find the best next-token choices
+
+```python
+topk_lp, topk_idx = log_probs.topk(beam_width)
+```
+
+This selects the `beam_width` highest log-probabilities:
+
+- `topk_lp`: their log-probabilities
+- `topk_idx`: their token IDs
+
+For each current beam, the function therefore considers its best `beam_width` possible next tokens.
+
+### Create the extended sequences
+
+```python
+for j in range(beam_width):
+    candidates.append((
+        score + topk_lp[j].item(),
+        seq + [topk_idx[j].item()]
+    ))
+```
+
+Each candidate gets:
+
+1. The previous sequence with one token appended.
+2. The previous score plus that token’s log-probability.
+
+`.item()` converts a single-element PyTorch tensor into a regular Python number.
+
+**Why add log-probabilities?** The probability of a generated sequence is a product of conditional probabilities:
+
+\[
+P(t_1,\ldots,t_n\mid \text{start})
+=
+\prod_{i=1}^{n}P(t_i\mid \text{start},t_1,\ldots,t_{i-1})
+\]
+
+Taking the logarithm turns that product into a sum:
+
+\[
+\text{score}
+=
+\sum_{i=1}^{n}\log P(t_i\mid \text{prefix})
+\]
+
+A higher score—usually a less negative number—means a more probable sequence.
+
+## 4. Keep only the best candidates overall
+
+```python
+if not candidates:
+    break
+```
+
+If no sequences can be expanded, stop.
+
+Otherwise:
+
+```python
+candidates.sort(key=lambda x: x[0], reverse=True)
+beams = candidates[:beam_width]
+```
+
+All candidates from **all current beams** are ranked together. Only the best `beam_width` survive.
+
+For example, with `beam_width = 2`:
+
+```text
+Current beams:
+    [START, A]       score = -0.2
+    [START, B]       score = -0.5
+
+Possible extensions:
+    [START, A, EOS]  score = -0.3
+    [START, A, C]    score = -0.6
+    [START, B, EOS]  score = -0.9
+    [START, B, C]    score = -1.1
+```
+
+The next beams are:
+
+```text
+[START, A, EOS]  score = -0.3
+[START, A, C]    score = -0.6
+```
+
+Notice that both surviving candidates can come from the same previous beam.
+
+## 5. Return the highest-scoring sequence
+
+```python
+all_seqs = completed + beams
+all_seqs.sort(key=lambda x: x[0], reverse=True)
+return all_seqs[0][1]
+```
+
+The function compares finished sequences with the beams remaining when the search stops, then returns the highest-scoring sequence.
+
+It returns **token IDs**, not decoded text, and includes the start token.
+
+## Important details
+
+- **`beam_width = 1` behaves like greedy decoding:** choose the best next token at each step.
+- **Beam search is approximate:** a prefix discarded early could have led to the best final sequence.
+- **The returned sequence may be unfinished:** if `max_len` is reached, it may not end with `eos_token`.
+- **There is no length normalization:** because log-probabilities are nonpositive, adding more tokens cannot improve a sequence’s raw score. This can favor shorter outputs.
+- **`beam_width` must not exceed the vocabulary size**, or `topk` will fail.
+- **Finished sequences are stored separately:** they no longer occupy a slot in subsequent rounds of expansion.
+
+**In short:** repeatedly extend the current sequences, score the extensions, keep the best few, and finally return the highest-scoring sequence found.

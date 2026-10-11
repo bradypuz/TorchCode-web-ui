@@ -1,93 +1,115 @@
-# Speculative Decoding Acceptance and Rejection
+This function implements the **accept/reject step of speculative decoding**: a fast *draft model* proposes tokens, and a stronger *target model* decides which ones to keep.
 
-This implements the **accept/reject part of speculative decoding**: a fast draft model proposes tokens, and a target model checks them. The function keeps accepted tokens until the first rejection, replaces that token, and stops.
+The goal is to use the draft model for speed while preserving the target model’s sampling behavior.
 
-The inputs are expected to be:
+## 1. What the inputs mean
 
-- `target_probs`: shape `[K, V]`, containing the target model’s token probabilities.
-- `draft_probs`: shape `[K, V]`, containing the draft model’s token probabilities.
-- `draft_tokens`: shape `[K]`, containing token IDs sampled from the draft model.
+Assume the vocabulary has `V` tokens and the draft model proposed `K` tokens:
 
-Here, `K` is the number of proposed tokens and `V` is the vocabulary size.
+- **`draft_tokens`**: the proposed token IDs, typically a tensor of shape `[K]`.
+- **`draft_probs`**: the draft model’s probability distributions, shape `[K, V]`.
+- **`target_probs`**: the target model’s probability distributions, shape `[K, V]`.
 
-**1. Check each proposed token**
+For position `i` and token ID `t`:
 
 ```python
-t = draft_tokens[i].item()
+draft_probs[i, t]
+```
+
+is how likely the draft model thought token `t` was, while:
+
+```python
+target_probs[i, t]
+```
+
+is how likely the target model thought it was.
+
+Each row should be conditioned on the original input **plus the preceding draft tokens**. The proposed tokens also need to have been sampled from the corresponding draft distributions for the usual correctness guarantee to hold.
+
+## 2. Check each proposed token
+
+```python
+K = len(draft_tokens)
+accepted = []
+for i in range(K):
+    t = draft_tokens[i].item()
+```
+
+The function walks through the proposals in order.
+
+- `K` is the number of proposed tokens.
+- `accepted` holds the output token IDs.
+- `.item()` converts a scalar PyTorch tensor into a Python number.
+
+Despite its name, `accepted` can also contain one **replacement token**, added when a proposal is rejected.
+
+### Compute its acceptance probability
+
+```python
 ratio = target_probs[i, t] / max(draft_probs[i, t].item(), 1e-10)
 ```
 
-`.item()` converts a single-element tensor into a Python number. The ratio compares how likely the proposed token is under the two models:
+Writing the target distribution as \(p\) and the draft distribution as \(q\), the ratio is approximately:
 
+\[
+\frac{p(t)}{q(t)}
+\]
 
-
-$$
-
-\text{ratio} = \frac{p_{\text{target}}(t)}{p_{\text{draft}}(t)}
-
-$$
-
-
-
-The `1e-10` floor protects against division by zero.
+The `1e-10` floor prevents division by zero or an extremely small denominator.
 
 ```python
 if torch.rand(1).item() < min(1.0, ratio.item()):
     accepted.append(t)
 ```
 
-This accepts the token with probability:
+The proposal is accepted with probability:
 
+\[
+a(t)=\min\left(1,\frac{p(t)}{q(t)}\right)
+\]
 
+That means:
 
-$$
-
-P(\text{accept }t)=\min\left(1,\frac{p_{\text{target}}(t)}
-                                       {p_{\text{draft}}(t)}\right)
-
-$$
-
-
+- **If the target assigns at least as much probability as the draft**, accept the token with probability 1.
+- **If the target assigns less probability**, accept only some of the time.
 
 For example:
 
-- Target probability `0.6`, draft probability `0.3` → always accept.
-- Target probability `0.2`, draft probability `0.5` → accept with probability `0.4`.
+| Draft probability \(q(t)\) | Target probability \(p(t)\) | Acceptance probability |
+|---:|---:|---:|
+| 0.20 | 0.30 | 100% |
+| 0.20 | 0.10 | 50% |
+| 0.20 | 0.02 | 10% |
 
-This rule reduces how often tokens that the draft model overproduces are kept.
+This probabilistic test—not simply checking whether both models prefer the same token—is what makes speculative sampling work.
 
-**2. If rejected, sample a replacement**
+## 3. If a token is rejected, sample a correction
 
 ```python
-adjusted = torch.clamp(target_probs[i] - draft_probs[i], min=0)
+else:
+    adjusted = torch.clamp(target_probs[i] - draft_probs[i], min=0)
 ```
 
-For every vocabulary token, this computes:
+This creates a distribution of **positive differences**:
 
+\[
+\text{adjusted}(x)=\max(p(x)-q(x),0)
+\]
 
-
-$$
-
-\text{adjusted}(x)=\max(p_{\text{target}}(x)-p_{\text{draft}}(x),0)
-
-$$
-
-
-
-It gives weight to tokens that the target model wants more often than the draft model proposes.
+It focuses on tokens that the target model assigns **more probability to than the draft model does**.
 
 For example:
 
 ```text
-                  A      B      C
-target_probs    0.50   0.30   0.20
-draft_probs     0.20   0.60   0.20
-difference      0.30  -0.30   0.00
-clamped         0.30   0.00   0.00
-normalized      1.00   0.00   0.00
+Token:          A     B     C
+Target p:      0.5   0.3   0.2
+Draft q:       0.2   0.5   0.3
+Positive p-q:  0.3   0.0   0.0
 ```
 
-If the draft proposed `B`, it would be accepted with probability `0.30 / 0.60 = 0.5`. If rejected, its replacement would always be `A`.
+In this example, the correction distribution puts all its probability on `A`.
+
+### Normalize it
 
 ```python
 s = adjusted.sum()
@@ -95,21 +117,90 @@ if s > 0:
     adjusted = adjusted / s
 ```
 
-Normalization makes the weights sum to one. If all weights are zero, the code falls back to a uniform distribution.
+`torch.multinomial` samples according to the supplied weights; here, normalization makes those weights sum to 1.
+
+The normalized correction distribution is:
+
+\[
+r(x)=
+\frac{\max(p(x)-q(x),0)}
+{\sum_y \max(p(y)-q(y),0)}
+\]
+
+### Handle a zero total
+
+```python
+else:
+    adjusted = torch.ones_like(adjusted) / adjusted.shape[0]
+```
+
+If there is no positive difference, the code falls back to a uniform distribution over the vocabulary.
+
+This is a defensive fallback. With valid, normalized distributions and exact arithmetic, a zero positive-difference total means \(p=q\), in which case an ordinarily sampled draft token should not be rejected in the first place.
+
+### Add one correction token and stop
 
 ```python
 accepted.append(torch.multinomial(adjusted, 1).item())
 return accepted
 ```
 
-`torch.multinomial` samples one replacement token. The function then stops because later draft tokens were generated assuming the rejected token was part of the sequence; that context has changed.
+The function samples **one replacement token**, appends it, and immediately returns.
 
-**3. If every token passes, return them all**
+Why stop? The later draft tokens were generated assuming the rejected token was part of the prefix. Once that token changes, those later proposals are no longer valid for the new prefix.
 
-The final `return accepted` returns all `K` draft tokens. The result is a **Python list of token IDs**, including a replacement if rejection occurred.
+For example:
 
-The acceptance rule and correction distribution together preserve the target model’s sampling distribution under the algorithm’s assumptions. See the [original speculative-decoding paper](https://proceedings.mlr.press/v202/leviathan23a/leviathan23a.pdf).
+```text
+Draft proposals:       [A, B, C, D]
+Decisions:              ✓  ✓  ✗
+Replacement for C:            X
+Returned output:       [A, B, X]
+```
 
-For that guarantee, the inputs must be normalized probabilities, each draft token must actually be sampled from its corresponding draft distribution, and both models’ rows must use the same preceding context. The uniform fallback is only a safeguard; after a genuine rejection, it should be unnecessary with valid distributions and exact arithmetic.
+`D` is discarded.
 
-This function only handles verification and correction. A full implementation also runs both models and usually samples one extra target token when all draft tokens are accepted.
+## 4. If every draft token is accepted
+
+```python
+return accepted
+```
+
+The function returns all `K` proposed tokens.
+
+So the returned list contains:
+
+- The accepted prefix plus **one correction token**, if rejection occurs.
+- All `K` draft tokens, if there is no rejection.
+
+## Why this preserves the target distribution
+
+Ignoring the numerical denominator floor, the probability of proposing and accepting token \(x\) is:
+
+\[
+q(x)\min\left(1,\frac{p(x)}{q(x)}\right)
+=\min(p(x),q(x))
+\]
+
+The rejection-and-correction branch supplies the missing probability:
+
+\[
+\max(p(x)-q(x),0)
+\]
+
+Together:
+
+\[
+\min(p(x),q(x))+\max(p(x)-q(x),0)=p(x)
+\]
+
+That is the key idea: **accepted draft tokens plus properly sampled correction tokens reproduce the target model’s distribution**.
+
+## Important details about this implementation
+
+- It only implements verification and correction; it does **not** generate draft tokens or run either model.
+- Standard speculative-decoding implementations often sample **one extra target-model token when all `K` proposals are accepted**. This function does not include that bonus-token step.
+- The `1e-10` denominator floor can slightly change the mathematically exact acceptance probability when a draft probability is below that threshold.
+- The speed benefit comes from checking multiple draft tokens with the target model in one batched forward pass—not from this Python loop itself.
+
+**In short:** keep draft tokens using the target-to-draft probability ratio; at the first rejection, sample a correction from the positive difference between the distributions and discard the remaining draft tokens.

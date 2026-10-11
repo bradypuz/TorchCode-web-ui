@@ -1,51 +1,60 @@
-# Implement RMSNorm
+This function implements **RMS normalization (RMSNorm)**: it rescales a tensor using its root mean square, then applies a per-feature scaling factor.
 
-This implements **RMS normalization (RMSNorm)**: it normalizes the magnitude of each vector along `x`’s last dimension, then applies a scale called `weight`.
+```python
+def rms_norm(x, weight, eps=1e-6):
+    rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
+    return x / rms * weight
+```
+
+## 1. Calculate the root mean square
 
 ```python
 rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
 ```
 
-This computes the root mean square:
+Read this from the inside out:
 
-1. `x.pow(2)` squares every element.
-2. `.mean(dim=-1)` averages those squares over the **last dimension**.
-3. `+ eps` adds a small number to prevent division by zero.
-4. `torch.sqrt(...)` takes the square root.
-5. `keepdim=True` keeps that dimension with size `1`, allowing the division below to broadcast correctly.
+- **`x.pow(2)`** squares every element.
+- **`.mean(dim=-1, keepdim=True)`** averages those squares along the **last dimension**.
+  - `dim=-1` means “the last axis.”
+  - `keepdim=True` preserves that axis with size `1`, so the result can broadcast correctly when dividing `x`.
+- **`+ eps`** adds a small positive number for numerical stability, preventing division by zero when the input is all zeros.
+- **`torch.sqrt(...)`** takes the square root.
+
+For a vector with \(d\) elements, the denominator is:
+
+\[
+\mathrm{rms} = \sqrt{\frac{1}{d}\sum_{i=1}^{d} x_i^2 + \epsilon}
+\]
+
+For example, if `x` has shape `[batch, sequence_length, hidden_size]`, `rms` has shape `[batch, sequence_length, 1]`. Each token’s hidden-state vector gets its **own** normalization factor.
+
+## 2. Normalize and scale
 
 ```python
 return x / rms * weight
 ```
 
-- `x / rms` normalizes each vector’s magnitude.
-- `* weight` scales each feature. In a neural network, `weight` is usually a learned parameter with one value per feature.
+- **`x / rms`** rescales each vector so its root mean square is approximately `1`—the small `eps` makes this approximate.
+- **`* weight`** applies a scaling factor, usually a vector of shape `[hidden_size]`, with one value per feature.
 
-Mathematically, for a vector with $d$ elements:
+In a neural network, `weight` is typically a learnable parameter. This function itself does not create that parameter; it uses whatever tensor you pass in.
 
+The complete formula is:
 
+\[
+y_i = \frac{x_i}{\sqrt{\frac{1}{d}\sum_{j=1}^{d}x_j^2 + \epsilon}}\,w_i
+\]
 
-$$
+## Small example
 
-y_i = \frac{x_i}{\sqrt{\frac{1}{d}\sum_{j=1}^{d}x_j^2+\epsilon}}\;w_i
-
-$$
-
-
-
-For example, with `x = [3, 4]` and `weight = [1, 1]`:
+With `x = [3, 4]` and `weight = [1, 1]`, ignoring the tiny `eps`:
 
 ```text
-rms    = sqrt((9 + 16) / 2) ≈ 3.536
-output ≈ [0.849, 1.131]
+Squared values:   [9, 16]
+Mean square:      (9 + 16) / 2 = 12.5
+Root mean square: sqrt(12.5) ≈ 3.536
+Output:           [3 / 3.536, 4 / 3.536] ≈ [0.849, 1.131]
 ```
 
-If `x` has shape `[batch, sequence, features]`, each token’s feature vector is normalized independently, and the output has the same shape.
-
-Unlike **LayerNorm**, RMSNorm does **not subtract the mean**—it only rescales the values.
-
-## Try it interactively
-
-```torchcode-visual
-normalization
-```
+**Unlike LayerNorm, RMSNorm does not subtract the mean.** It adjusts the input’s magnitude without centering it around zero.

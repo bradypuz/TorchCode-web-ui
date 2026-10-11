@@ -22,6 +22,8 @@ from pydantic import BaseModel, Field
 
 from torch_judge.tasks import TASKS
 
+from api.review import INTERVALS, memory_stage, review_metrics
+
 
 ROOT = Path(__file__).resolve().parent.parent
 # Define each course explicitly, then preserve the README's weekly order for
@@ -50,7 +52,6 @@ ATTENTION = {"attention", "mha", "cross_attention", "causal_attention", "gqa",
 TRAINING = {"adam", "cosine_lr", "gradient_clipping", "gradient_accumulation", "weight_init"}
 ARCHITECTURE = {"gpt2_block", "lora", "moe", "vit_patch"}
 INFERENCE = {"topk_sampling", "beam_search", "speculative_decoding", "int8_quantization", "bpe"}
-INTERVALS = (2, 4, 7, 14, 30)
 
 
 def study_for(task_id: str) -> dict[str, Any]:
@@ -115,6 +116,7 @@ class PracticeStore:
                     solved INTEGER NOT NULL DEFAULT 0, needs_review INTEGER NOT NULL DEFAULT 0,
                     clean_passes INTEGER NOT NULL DEFAULT 0, review_due_at TEXT,
                     review_anchor_at TEXT, review_due_days INTEGER, review_reason TEXT,
+                    manual_review INTEGER NOT NULL DEFAULT 0,
                     imported_attempts INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (user_id, task_id)
                 );
@@ -137,6 +139,37 @@ class PracticeStore:
                                  ("review_reason", "TEXT")):
                 if column not in columns:
                     connection.execute(f"ALTER TABLE progress ADD COLUMN {column} {kind}")
+            if "manual_review" not in columns:
+                connection.execute("ALTER TABLE progress ADD COLUMN manual_review INTEGER NOT NULL DEFAULT 0")
+                # Older flags overwrote the scheduling anchor. Recover it from
+                # real submissions, preserving the explicit user request.
+                for state in connection.execute("SELECT * FROM progress WHERE review_reason = 'manual'").fetchall():
+                    connection.execute("UPDATE progress SET manual_review = 1 WHERE user_id = ? AND task_id = ?",
+                                       (state["user_id"], state["task_id"]))
+                    latest = connection.execute("""
+                        SELECT * FROM attempts WHERE user_id = ? AND task_id = ?
+                        ORDER BY created_at DESC, id DESC LIMIT 1
+                    """, (state["user_id"], state["task_id"])).fetchone()
+                    if latest:
+                        delay = (INTERVALS[min(max(state["clean_passes"] - 1, 0), len(INTERVALS) - 1)]
+                                 if latest["success"] and state["clean_passes"] else 1 if latest["success"] else 0)
+                        anchor = parse_timestamp(latest["created_at"])
+                        connection.execute("""
+                            UPDATE progress SET review_anchor_at = ?, review_due_days = ?,
+                                                review_due_at = ?, review_reason = ?
+                            WHERE user_id = ? AND task_id = ?
+                        """, (timestamp(anchor), delay, timestamp(anchor + timedelta(days=delay)),
+                              "spaced" if state["clean_passes"] else "hint" if latest["hint_used"] else
+                              "retries" if latest["success"] else "failed", state["user_id"], state["task_id"]))
+                    elif not state["solved"]:
+                        connection.execute("""
+                            UPDATE progress SET review_anchor_at = NULL, review_due_days = NULL,
+                                                review_due_at = NULL, review_reason = NULL
+                            WHERE user_id = ? AND task_id = ?
+                        """, (state["user_id"], state["task_id"]))
+                    else:
+                        connection.execute("UPDATE progress SET review_reason = 'imported' WHERE user_id = ? AND task_id = ?",
+                                           (state["user_id"], state["task_id"]))
         self._import_notebook_progress()
 
     @contextmanager
@@ -235,17 +268,20 @@ class PracticeStore:
         if task_id not in TASKS:
             raise HTTPException(status_code=404, detail="Task not found")
         at = at or utc_now()
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=dt_timezone.utc)
         success = bool(result.get("success", False))
         failed = [test["name"] for test in result.get("tests", []) if not test.get("passed")]
         with self.connection() as connection:
-            last_success = connection.execute("""
-                SELECT COALESCE(MAX(id), 0) AS id FROM attempts
-                WHERE user_id = ? AND task_id = ? AND success = 1
-            """, (user_id, task_id)).fetchone()["id"]
-            prior_failures = connection.execute("""
-                SELECT COUNT(*) AS count FROM attempts
-                WHERE user_id = ? AND task_id = ? AND id > ? AND success = 0
-            """, (user_id, task_id, last_success)).fetchone()["count"]
+            earlier = connection.execute("""
+                SELECT success, hint_used, created_at FROM attempts WHERE user_id = ? AND task_id = ?
+                ORDER BY created_at, id
+            """, (user_id, task_id)).fetchall()
+            prior_failures = 0
+            for row in reversed(earlier):
+                if row["success"]:
+                    break
+                prior_failures += 1
             connection.execute("""
                 INSERT INTO attempts
                 (user_id, task_id, success, passed, total, hint_used, failed_tests, created_at, submitted_code)
@@ -256,17 +292,29 @@ class PracticeStore:
                                (user_id, task_id))
             old = connection.execute("SELECT * FROM progress WHERE user_id = ? AND task_id = ?",
                                      (user_id, task_id)).fetchone()
+            # Backfilled dated history must not replace newer learner state.
+            if earlier and parse_timestamp(earlier[-1]["created_at"]) > at:
+                if success:
+                    connection.execute("UPDATE progress SET solved = 1 WHERE user_id = ? AND task_id = ?",
+                                       (user_id, task_id))
+                return
             struggled = success and prior_failures >= 2
-            clean_passes = old["clean_passes"] + 1 if success and not hint_used and not struggled else 0
+            clean = success and not hint_used and not struggled
+            clean_passes = memory_stage([dict(row) for row in earlier] + [{
+                "success": success, "hint_used": hint_used, "created_at": timestamp(at),
+            }])
             delay = INTERVALS[min(clean_passes - 1, len(INTERVALS) - 1)] if clean_passes else (1 if success else 0)
+            if not success:
+                delay = 0
             due = at + timedelta(days=delay)
             reason = "failed" if not success else "hint" if hint_used else "retries" if struggled else "spaced"
+            manual_review = bool(old["manual_review"]) and not clean
             connection.execute("""
                 UPDATE progress SET solved = ?, needs_review = ?, clean_passes = ?, review_due_at = ?,
-                                    review_anchor_at = ?, review_due_days = ?, review_reason = ?
+                                    review_anchor_at = ?, review_due_days = ?, review_reason = ?, manual_review = ?
                 WHERE user_id = ? AND task_id = ?
-            """, (int(old["solved"] or success), int(not success or hint_used or struggled),
-                  clean_passes, timestamp(due), timestamp(at), delay, reason, user_id, task_id))
+            """, (int(old["solved"] or success), int(manual_review or not success or hint_used or struggled),
+                  clean_passes, timestamp(due), timestamp(at), delay, reason, int(manual_review), user_id, task_id))
 
     def _validate_submission_scope(self, user_id: str, task_id: str) -> None:
         self.profile(user_id)
@@ -327,16 +375,20 @@ class PracticeStore:
         with self.connection() as connection:
             connection.execute("INSERT OR IGNORE INTO progress (user_id, task_id) VALUES (?, ?)",
                                (user_id, task_id))
-            at = utc_now()
-            delay = 0 if needs_review else 2
-            due = at + timedelta(days=delay)
+            state = connection.execute("SELECT review_reason, needs_review, manual_review FROM progress WHERE user_id = ? AND task_id = ?",
+                                       (user_id, task_id)).fetchone()
+            # Clicking a flag supplies confidence information, not a new
+            # recall. Keep the last practice timestamp and actual test signal.
+            automatic = (state["review_reason"] in ("failed", "hint", "retries", "legacy") or
+                         bool(state["needs_review"] and not state["manual_review"]))
+            if automatic and state["review_reason"] is None:
+                connection.execute("UPDATE progress SET review_reason = 'legacy' WHERE user_id = ? AND task_id = ?",
+                                   (user_id, task_id))
             connection.execute("""
-                UPDATE progress SET needs_review = ?, review_due_at = ?, review_anchor_at = ?,
-                                    review_due_days = ?, review_reason = ?
+                UPDATE progress SET manual_review = ?, needs_review = ?
                 WHERE user_id = ? AND task_id = ?
-            """, (int(needs_review), timestamp(due), timestamp(at), delay,
-                  "manual" if needs_review else "spaced", user_id, task_id))
-        return {"ok": True}
+            """, (int(needs_review), int(needs_review or automatic), user_id, task_id))
+        return {"ok": True, "manual_review": needs_review, "needs_review": bool(needs_review or automatic)}
 
     def dashboard(self, user_id: str = "local", count: int = 3,
                   day: str | None = None, timezone: str = "America/Los_Angeles",
@@ -348,10 +400,17 @@ class PracticeStore:
             zone = ZoneInfo(timezone)
         except (ZoneInfoNotFoundError, ValueError):
             raise HTTPException(status_code=422, detail="Unknown timezone")
+        clock = now or utc_now()
+        if clock.tzinfo is None:
+            clock = clock.replace(tzinfo=dt_timezone.utc)
         try:
-            today = date.fromisoformat(day) if day else (now or utc_now()).astimezone(zone).date()
+            today = date.fromisoformat(day) if day else clock.astimezone(zone).date()
         except ValueError:
             raise HTTPException(status_code=422, detail="Use YYYY-MM-DD for the day")
+        # The UI supplies today's date explicitly; use its live clock for the
+        # curve. Historical/future day previews use a stable local noon.
+        as_of = clock if now is not None or today == clock.astimezone(zone).date() else datetime.combine(
+            today, datetime.min.time(), tzinfo=zone) + timedelta(hours=12)
         with self.connection() as connection:
             attempts = [dict(row) for row in connection.execute(
                 """SELECT id, user_id, task_id, success, passed, total, hint_used,
@@ -385,82 +444,116 @@ class PracticeStore:
 
             completed = {
                 task_id for task_id, attempt in latest_today.items()
-                if attempt["success"] and not (
-                    states.get(task_id, {}).get("needs_review")
-                    and review_due_day(task_id) is not None
-                    and review_due_day(task_id) <= today
-                )
+                if attempt["success"] and not states.get(task_id, {}).get("manual_review")
+                and not (states.get(task_id, {}).get("needs_review")
+                         and review_due_day(task_id) is not None
+                         and review_due_day(task_id) <= today)
             }
             order = {task_id: index for index, task_id in enumerate(CURRICULUM)}
             task_order = sorted(TASKS, key=lambda task_id: (order.get(task_id, 999), task_id))
+            metrics = {
+                task_id: review_metrics(state, by_task.get(task_id, []), as_of,
+                                        unknown_memory_due=review_due_day(task_id) is not None
+                                        and review_due_day(task_id) <= today)
+                for task_id, state in states.items()
+            }
 
-            def card(task_id: str, kind: str, reason: str | None = None) -> dict[str, Any]:
+            def review_reason(task_id: str) -> str:
+                state = states.get(task_id, {})
+                entries = by_task.get(task_id, [])
+                latest = entries[-1] if entries else None
+                metric = metrics.get(task_id, {})
+                factors = metric.get("review_factors", {})
+                reasons = []
+                if state.get("manual_review"):
+                    reasons.append("You marked this lesson Needs more practice.")
+                if latest and not latest["success"]:
+                    reasons.append(f"Your last attempt passed {latest['passed']} of {latest['total']} tests.")
+                elif state.get("review_reason") == "retries":
+                    reasons.append("You got there after a few retries; another pass will build confidence.")
+                elif state.get("review_reason") == "hint":
+                    reasons.append("You used a hint last time; try it again without hints.")
+                elif factors.get("mistakes", 0) >= 0.1:
+                    reasons.append("Recent submissions had mistakes; a clean attempt will lower this priority.")
+                retention = metric.get("estimated_retention")
+                if retention is not None and factors.get("forgetting", 0) >= 0.1:
+                    reasons.append(f"Estimated recall is {round(retention * 100)}% as time has passed since your last successful practice.")
+                elif retention is None and state.get("solved"):
+                    reasons.append("Your earlier solve has no dated practice history; revisit it to start a review schedule.")
+                return " ".join(reasons) or "A quick revisit will help this lesson stick."
+
+            def new_reason(task_id: str) -> str:
+                study = study_for(task_id)
+                return (f"Next in Week {study['study_week']} · {study['study_focus']}. "
+                        "Build momentum with the README study plan." if study["study_week"] else
+                        "Keep growing with an extra lesson after the README study plan.")
+
+            def card(task_id: str, kind: str) -> dict[str, Any]:
                 task = TASKS[task_id]
                 entries = by_task.get(task_id, [])
                 latest = entries[-1] if entries else None
                 state = states.get(task_id, {})
-                if reason is None:
-                    if latest and not latest["success"]:
-                        reason = f"Your last attempt passed {latest['passed']} of {latest['total']} tests. Let's close the gap."
-                    elif state.get("review_reason") == "retries":
-                        reason = "You got there after a few retries. Try it again to make it stick."
-                    elif state.get("review_reason") == "manual":
-                        reason = "You marked this lesson for another pass. Let's build confidence."
-                    elif state.get("review_reason") == "hint":
-                        reason = "You used a hint last time. Try it again without hints."
-                    elif state.get("needs_review"):
-                        reason = "Build confidence with a fresh attempt."
-                    else:
-                        reason = "A quick revisit will help this lesson stick."
                 return {
                     "id": task_id, "title": task["title"], "difficulty": task.get("difficulty", "Unknown"),
-                    "topic": topic_for(task_id), "kind": kind, "reason": reason,
+                    "topic": topic_for(task_id), "kind": kind,
+                    "reason": review_reason(task_id) if kind == "review" else new_reason(task_id),
                     "completed": task_id in completed,
                     "estimated_minutes": {"Easy": 10, "Medium": 20, "Hard": 30}.get(task.get("difficulty"), 15),
                     "passed": latest["passed"] if latest else None,
                     "total": latest["total"] if latest else None,
                     "last_attempt_at": latest["created_at"] if latest else None,
                     "needs_review": bool(state.get("needs_review")),
+                    "manual_review": bool(state.get("manual_review")),
+                    **metrics.get(task_id, review_metrics({}, [], as_of)),
                     **study_for(task_id),
                 }
 
-            due_ids = [task_id for task_id in states
-                       if review_due_day(task_id) is not None
-                       and review_due_day(task_id) <= today
-                       and task_id not in completed]
+            due_ids = [task_id for task_id, state in states.items()
+                       if task_id not in completed and (
+                           state.get("manual_review") or
+                           (review_due_day(task_id) is not None and review_due_day(task_id) <= today)
+                           or (metrics[task_id]["estimated_retention"] is not None
+                               and metrics[task_id]["estimated_retention"] <= 0.8))]
             due_ids.sort(key=lambda task_id: (
-                0 if states[task_id]["needs_review"] else 1,
-                0 if by_task.get(task_id) and not by_task[task_id][-1]["success"] else 1,
-                review_due_day(task_id), order.get(task_id, 999)))
+                -metrics[task_id]["review_score"],
+                review_due_day(task_id) or today, order.get(task_id, 999), task_id))
             reviews = [card(task_id, "review") for task_id in due_ids]
             existing = connection.execute("""
                 SELECT entries FROM daily_plans WHERE user_id = ? AND day = ? AND timezone = ?
             """, (user_id, today.isoformat(), timezone)).fetchone()
-            planned = json.loads(existing["entries"]) if existing else []
-            planned = [entry for entry in planned if entry["id"] in TASKS]
-            planned_ids = {entry["id"] for entry in planned}
-            review_slots = max(1, count // 3)
-            chosen_reviews = sum(entry["kind"] == "review" for entry in planned)
-            candidates = [card(task_id, "review") for task_id in due_ids
-                          if task_id not in planned_ids][:max(0, review_slots - chosen_reviews)]
-            candidates += [card(task_id, "new", (
-                f"Next in Week {study_for(task_id)['study_week']} · {study_for(task_id)['study_focus']}. "
-                "Build momentum with the README study plan." if study_for(task_id)["study_week"] else
-                "Keep growing with an extra lesson after the README study plan."))
-                           for task_id in task_order
-                           if task_id not in planned_ids and not states.get(task_id, {}).get("solved")
-                           and task_id not in due_ids and task_id not in completed]
-            # Once all lessons are solved, an all-review daily plan still works.
-            candidates += [card(task_id, "review") for task_id in due_ids
-                           if task_id not in planned_ids and task_id not in {entry["id"] for entry in candidates}]
-            if len(planned) < count:
-                planned += [{"id": entry["id"], "kind": entry["kind"], "reason": entry["reason"]}
-                            for entry in candidates[:count - len(planned)]]
-                connection.execute("""
-                    INSERT INTO daily_plans (user_id, day, timezone, entries) VALUES (?, ?, ?, ?)
-                    ON CONFLICT (user_id, day, timezone) DO UPDATE SET entries = excluded.entries
-                """, (user_id, today.isoformat(), timezone, json.dumps(planned)))
-            plan = [card(entry["id"], entry["kind"], entry["reason"]) for entry in planned[:count]]
+            stored = json.loads(existing["entries"]) if existing else []
+            # A completed entry remains in today's goal. Incomplete choices
+            # are rebuilt from current signals so a new flag/failure cannot be
+            # hidden behind an already-full cached plan or a stale reason.
+            kept = []
+            kept_ids = set()
+            for entry in stored:
+                task_id = entry.get("id")
+                if task_id in completed and task_id in TASKS and task_id not in kept_ids:
+                    kept.append({"id": task_id, "kind": entry.get("kind", "new")})
+                    kept_ids.add(task_id)
+            for task_id in task_order:
+                if task_id in completed and task_id not in kept_ids:
+                    kept.append({"id": task_id, "kind": "new"})
+                    kept_ids.add(task_id)
+            remaining = max(0, count - len(kept))
+            review_slots = min(remaining, max(1, count // 3))
+            selected = [{"id": task_id, "kind": "review"} for task_id in due_ids[:review_slots]]
+            selected_ids = kept_ids | {entry["id"] for entry in selected}
+            selected += [{"id": task_id, "kind": "new"} for task_id in task_order
+                         if task_id not in selected_ids and not states.get(task_id, {}).get("solved")
+                         and task_id not in due_ids and task_id not in completed][:remaining - len(selected)]
+            selected_ids.update(entry["id"] for entry in selected)
+            # All-solved learners, and goals larger than the remaining new
+            # lessons, can fill available slots with the next ranked reviews.
+            selected += [{"id": task_id, "kind": "review"} for task_id in due_ids
+                         if task_id not in selected_ids][:remaining - len(selected)]
+            planned = kept + selected
+            connection.execute("""
+                INSERT INTO daily_plans (user_id, day, timezone, entries) VALUES (?, ?, ?, ?)
+                ON CONFLICT (user_id, day, timezone) DO UPDATE SET entries = excluded.entries
+            """, (user_id, today.isoformat(), timezone, json.dumps(planned)))
+            plan = [card(entry["id"], entry["kind"]) for entry in planned[:count]]
 
         streak_day = today if day_counts.get(today) else today - timedelta(days=1)
         streak = 0
@@ -490,6 +583,7 @@ class PracticeStore:
             "attempts": len(web_by_task[attempt["task_id"]]),
             "solved": bool(states.get(attempt["task_id"], {}).get("solved")),
             "needs_review": bool(states.get(attempt["task_id"], {}).get("needs_review")),
+            "manual_review": bool(states.get(attempt["task_id"], {}).get("manual_review")),
         } for attempt in latest_web]
         return {
             "profile": profile, "day": today.isoformat(), "timezone": timezone,
@@ -510,6 +604,7 @@ class PracticeStore:
                           "status": "solved" if states.get(task_id, {}).get("solved") else
                                     "attempted" if task_id in states or task_id in by_task else "unseen",
                           "needs_review": bool(states.get(task_id, {}).get("needs_review")),
+                          "manual_review": bool(states.get(task_id, {}).get("manual_review")),
                           "attempts": len(by_task.get(task_id, [])) + states.get(task_id, {}).get("imported_attempts", 0),
                           "last_attempt_at": by_task[task_id][-1]["created_at"] if task_id in by_task else None}
                          for task_id in task_order],
@@ -517,6 +612,9 @@ class PracticeStore:
             "curriculum": [{**week,
                             "solved": sum(bool(states.get(task_id, {}).get("solved"))
                                           for task_id in week["task_ids"]),
+                            "ready": sum(bool(states.get(task_id, {}).get("solved"))
+                                         and not states.get(task_id, {}).get("needs_review")
+                                         for task_id in week["task_ids"]),
                             "total": len(week["task_ids"])} for week in STUDY_WEEKS],
         }
 
