@@ -19,7 +19,7 @@ EXPECTED_COUNTS = {
     "gqa": 19, "sliding_window": 8, "linear_attention": 7, "gpt2_block": 27,
     "kv_cache": 27, "mlp": 4, "cross_entropy": 2, "dropout": 5,
     "embedding": 2, "gelu": 1, "weight_init": 5, "gradient_clipping": 7,
-    "conv2d": 11, "cross_attention": 15, "rope": 12, "flash_attention": 21,
+    "conv2d": 14, "cross_attention": 15, "rope": 12, "flash_attention": 21,
     "lora": 7, "vit_patch": 9, "moe": 22, "adam": 20, "cosine_lr": 6,
     "gradient_accumulation": 9, "topk_sampling": 13, "beam_search": 19,
     "speculative_decoding": 17, "bpe": 40, "int8_quantization": 10,

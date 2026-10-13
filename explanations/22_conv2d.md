@@ -1,223 +1,250 @@
-This function implements a basic **2D convolution** using PyTorch’s tensor operations rather than calling `F.conv2d`. Its main idea is:
+This function implements a **2D convolution by turning it into a matrix multiplication**.
 
-1. Optionally pad the input.
-2. Extract every sliding window.
-3. Multiply each window by each filter and sum the results.
-4. Optionally add a bias.
+Instead of moving a kernel across the image in a loop, it:
 
-## 1. Inputs and shapes
+1. Extracts every input window the kernels will operate on.
+2. Flattens each kernel into a vector.
+3. Computes all kernel–window dot products with one matrix multiplication.
+4. Reshapes the results into an output image and adds the bias.
 
-```python
-def my_conv2d(x, weight, bias=None, stride=1, padding=0):
-```
-
-The expected shapes are:
-
-| Argument | Shape | Meaning |
-|---|---|---|
-| `x` | `(B, C_in, H, W)` | Batch of input images or feature maps |
-| `weight` | `(C_out, C_in, kH, kW)` | Convolution filters |
-| `bias` | `(C_out,)` | Optional bias, one value per output channel |
-
-Here:
-- `B`: batch size
-- `C_in`: number of input channels
-- `C_out`: number of output channels, also the number of filters
-- `H`, `W`: input height and width
-- `kH`, `kW`: filter height and width
-- `stride`: how far the filter moves between positions
-- `padding`: how many zeros to add around each spatial edge
-
-Each filter spans **all input channels** and produces one output channel.
-
-## 2. Add zero-padding
+For the supported arguments, it computes the same operation as:
 
 ```python
-if padding > 0:
-    x = F.pad(x, [padding] * 4)
+F.conv2d(x, weight, bias=bias, stride=stride, padding=padding)
 ```
 
-For a 4D input, the four padding values specify:
-
-```python
-[left, right, top, bottom]
-```
-
-So if `padding=1`, this adds a one-pixel border of zeros on every side.
-
-The shape changes from:
-
-```text
-(B, C_in, H, W)
-```
-
-to:
-
-```text
-(B, C_in, H + 2*padding, W + 2*padding)
-```
-
-## 3. Calculate the output dimensions
+## 1. Read the input and kernel dimensions
 
 ```python
 B, C_in, H, W = x.shape
 C_out, _, kH, kW = weight.shape
-
-H_out = (H - kH) // stride + 1
-W_out = (W - kW) // stride + 1
 ```
 
-Because `H` and `W` are read **after padding**, they already include the added border.
+The expected shapes are:
 
-The formulas count how many positions the filter can occupy while staying inside the padded input. In terms of the original input dimensions:
+| Tensor | Shape | Meaning |
+|---|---|---|
+| `x` | `[B, C_in, H, W]` | A batch of input images or feature maps |
+| `weight` | `[C_out, C_in, kH, kW]` | One kernel per output channel |
+| `bias` | `[C_out]` | One optional bias per output channel |
 
-\[
-H_{\text{out}}
-=
-\left\lfloor\frac{H_{\text{original}}+2\,\text{padding}-kH}{\text{stride}}\right\rfloor+1
-\]
+For example:
 
-The width formula is analogous.
+```text
+x.shape      = [8, 3, 32, 32]
+weight.shape = [16, 3, 3, 3]
+```
 
-**Note:** `H_out` and `W_out` are calculated but never actually used later. `unfold` creates those dimensions automatically.
+means:
 
-## 4. Extract sliding windows
+- There are 8 input images.
+- Each image has 3 channels and is 32 × 32.
+- There are 16 kernels, producing 16 output channels.
+- Each kernel covers a 3 × 3 region **across all 3 input channels**.
+
+A kernel therefore contains `3 × 3 × 3 = 27` weights—not just 9.
+
+## 2. Calculate the output size
 
 ```python
-patches = x.unfold(2, kH, stride).unfold(3, kW, stride)
+H_out = (H + 2 * padding - kH) // stride + 1
+W_out = (W + 2 * padding - kW) // stride + 1
 ```
 
-`unfold` extracts sliding windows along a chosen dimension.
+These formulas count how many valid kernel positions fit along each dimension.
 
-### First: slide along height
+- `padding` adds zeros on both sides, hence `2 * padding`.
+- `stride` determines how far the kernel moves between positions.
+- `//` uses integer division: a partial final window is not included.
+
+For example, with a 32 × 32 input, a 3 × 3 kernel, padding 1, and stride 1:
+
+```text
+H_out = (32 + 2 - 3) // 1 + 1 = 32
+W_out = (32 + 2 - 3) // 1 + 1 = 32
+```
+
+The output’s spatial size is still 32 × 32.
+
+## 3. Extract and flatten the input windows
 
 ```python
-x.unfold(2, kH, stride)
+patches = F.unfold(
+    x, kernel_size=(kH, kW),
+    stride=stride, padding=padding
+)
 ```
 
-Dimension `2` is height. This produces:
+`F.unfold` extracts the sliding windows and places each flattened window into a **column**.
+
+Its output shape is:
 
 ```text
-(B, C_in, H_out, W, kH)
+[B, C_in * kH * kW, H_out * W_out]
 ```
 
-### Then: slide along width
+Let:
+
+```text
+K = C_in * kH * kW   # Number of values in one window
+L = H_out * W_out    # Number of window positions
+```
+
+Then `patches` has shape `[B, K, L]`.
+
+### Small example
+
+Suppose there is one image with one channel:
+
+```text
+1  2  3
+4  5  6
+7  8  9
+```
+
+With a 2 × 2 kernel, stride 1, and no padding, the four windows are:
+
+```text
+Top-left      Top-right     Bottom-left   Bottom-right
+
+1  2          2  3           4  5           5  6
+4  5          5  6           7  8           8  9
+```
+
+Ignoring the batch dimension, `unfold` produces:
+
+```text
+patches =
+[
+    [1, 2, 4, 5],
+    [2, 3, 5, 6],
+    [4, 5, 7, 8],
+    [5, 6, 8, 9],
+]
+```
+
+**Each column is one flattened window.**
+
+With multiple input channels, each column includes the window values from every channel, in the same order used when flattening the weights.
+
+## 4. Flatten the kernels
 
 ```python
-.unfold(3, kW, stride)
+weight_flat = weight.reshape(C_out, -1)
 ```
 
-Dimension `3` is still width. The final shape is:
+This changes the shape from:
 
 ```text
-(B, C_in, H_out, W_out, kH, kW)
-```
-
-You can think of:
-
-```python
-patches[b, :, h, w, :, :]
-```
-
-as the input window at output position `(h, w)` for batch item `b`. Its shape is:
-
-```text
-(C_in, kH, kW)
-```
-
-That is exactly the shape of one convolution filter.
-
-## 5. Apply every filter to every window
-
-```python
-out = torch.einsum('bihwjk,oijk->bohw', patches, weight)
-```
-
-This line does the core computation.
-
-The letters name the tensor dimensions:
-
-| Letter | Meaning |
-|---|---|
-| `b` | Batch |
-| `i` | Input channel |
-| `h`, `w` | Output spatial position |
-| `j`, `k` | Position within the filter |
-| `o` | Output channel |
-
-The inputs have shapes:
-
-```text
-patches: b i h w j k
-weight:  o i     j k
-```
-
-The requested output is:
-
-```text
-out:     b o h w
-```
-
-Since `i`, `j`, and `k` do not appear in the output specification, `einsum` **sums over them**:
-
-\[
-\text{out}[b,o,h,w]
-=
-\sum_{i,j,k}
-\text{patches}[b,i,h,w,j,k]\,
-\text{weight}[o,i,j,k]
-\]
-
-In plain English:
-
-> For each window and each filter, multiply matching elements and add them all together.
-
-The output shape is therefore:
-
-```text
-(B, C_out, H_out, W_out)
-```
-
-## 6. Add bias
-
-```python
-if bias is not None:
-    out = out + bias.view(1, -1, 1, 1)
-```
-
-The reshape changes the bias from:
-
-```text
-(C_out,)
+[C_out, C_in, kH, kW]
 ```
 
 to:
 
 ```text
-(1, C_out, 1, 1)
+[C_out, K]
 ```
 
-Broadcasting then adds the same channel-specific bias to every spatial position and every item in the batch.
+Each row is one flattened kernel. The `-1` tells PyTorch to infer that dimension.
 
-## Example
+For example, this kernel:
+
+```text
+1  1
+1  1
+```
+
+becomes:
+
+```text
+[1, 1, 1, 1]
+```
+
+## 5. Compute every convolution result
 
 ```python
-x = torch.randn(2, 3, 32, 32)
-weight = torch.randn(8, 3, 3, 3)
-bias = torch.randn(8)
-
-out = my_conv2d(x, weight, bias, stride=1, padding=1)
-
-print(out.shape)
-# torch.Size([2, 8, 32, 32])
+out = weight_flat @ patches
 ```
 
-There are eight filters, so the result has eight output channels. A `3 × 3` filter with padding `1` and stride `1` preserves the spatial size.
+The shapes are:
 
-For these supported arguments, this performs the same basic operation as:
+```text
+weight_flat: [C_out, K]
+patches:     [B, K, L]
+out:         [B, C_out, L]
+```
+
+PyTorch broadcasts the same weight matrix across the batch.
+
+Each output value is a dot product between:
+
+- One row of `weight_flat`: a kernel.
+- One column of `patches`: an input window.
+
+That dot product multiplies corresponding values and sums over **all input channels and kernel positions**.
+
+Using the all-ones kernel above:
+
+```text
+[1, 1, 1, 1] @ patches = [12, 16, 24, 28]
+```
+
+For instance, the first result is:
+
+```text
+1×1 + 1×2 + 1×4 + 1×5 = 12
+```
+
+This is exactly the calculation performed at the top-left convolution position.
+
+## 6. Restore the spatial dimensions
 
 ```python
-F.conv2d(x, weight, bias, stride=1, padding=1)
+out = out.reshape(B, C_out, H_out, W_out)
 ```
 
-**Two important details:** Like PyTorch’s `conv2d`, it technically computes *cross-correlation*—the filters are not flipped. Also, this is a simplified implementation: it does not support groups, dilation, or tuple-valued stride/padding, and the built-in `F.conv2d` is generally much more optimized.
+The `L` window positions are arranged back into a grid.
+
+In the small example:
+
+```text
+[12, 16, 24, 28]
+```
+
+becomes:
+
+```text
+12  16
+24  28
+```
+
+The final tensor shape is:
+
+```text
+[B, C_out, H_out, W_out]
+```
+
+## 7. Add one bias per output channel
+
+```python
+if bias is not None:
+    out += bias.view(1, -1, 1, 1)
+```
+
+The bias is reshaped from `[C_out]` to:
+
+```text
+[1, C_out, 1, 1]
+```
+
+Broadcasting then adds each channel’s bias to **every spatial position in that channel, for every image in the batch**.
+
+## Important details
+
+- **It supports ordinary, ungrouped convolution:** it does not implement `groups` or configurable `dilation`.
+- **`stride` and `padding` must be single integers here.** Although `F.unfold` accepts tuples, this function’s output-size calculations do not handle them.
+- **Like PyTorch’s `conv2d`, it technically computes cross-correlation:** the kernel is not flipped.
+- **It is differentiable:** PyTorch autograd can compute gradients through `unfold`, matrix multiplication, reshape, and bias addition.
+- **It can use substantial memory:** overlapping windows are explicitly expanded into `patches`. Native `F.conv2d` can use more efficient implementations.
+
+**In short: `unfold` turns image regions into columns, the flattened kernels multiply those columns, and `reshape` turns the results back into feature maps.**

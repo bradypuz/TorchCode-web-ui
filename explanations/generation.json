@@ -200,10 +200,10 @@
     {
       "solution_file": "solutions/22_conv2d_solution.ipynb",
       "explanation_file": "explanations/22_conv2d.md",
-      "solution_code_sha256": "81d6472c3527b6c05a70ae371bca96e02ac46629f3ae72381f73e3415e599af7",
-      "prompt_sha256": "7c752773463bb11e8f9a3e766e3d4900f3b486820ded871fa77886e691bd44c4",
-      "raw_response_sha256": "5d0e643b333de6dfcb33aa64f0f633a17f6452e6e544c7f55b22b2874d0cd720",
-      "explanation_sha256": "5d0e643b333de6dfcb33aa64f0f633a17f6452e6e544c7f55b22b2874d0cd720"
+      "solution_code_sha256": "7005d12ecb243da392887cc63c3ec7f8107f7acf9812f51acffbfabf828613ba",
+      "prompt_sha256": "ba9cf5fc5f8526a194835512c0ba3d94d3a5fc7ed8896432308d5206deb9342c",
+      "raw_response_sha256": "796e321041799d738a36cf89a5d1963a5de5eb1661f12066806121dbbd0fd6c4",
+      "explanation_sha256": "796e321041799d738a36cf89a5d1963a5de5eb1661f12066806121dbbd0fd6c4"
     },
     {
       "solution_file": "solutions/23_cross_attention_solution.ipynb",
