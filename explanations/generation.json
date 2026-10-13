@@ -62,10 +62,10 @@
     {
       "solution_file": "solutions/06_multihead_attention_solution.ipynb",
       "explanation_file": "explanations/06_multihead_attention.md",
-      "solution_code_sha256": "b7c31d63ba2185940f93d3507ee14238268b038ebe41d1c4fda7112f777804e4",
-      "prompt_sha256": "b39f83589b5eb35cd4926d63c0c54ce0d9f14263c9221389a70f7bba68df6443",
-      "raw_response_sha256": "1b46bf63ba957582a1034474454383ac429c26b0ec36a658ac88052d5cfec2fa",
-      "explanation_sha256": "1b46bf63ba957582a1034474454383ac429c26b0ec36a658ac88052d5cfec2fa"
+      "solution_code_sha256": "2eed5fa413b6e467229c373edd21c4dfe1d361deace1aced11a4d19db4194e0a",
+      "prompt_sha256": "1fe155488b3a6599bf50b6bc77935c5159e780aa15d150dc9870fbd69acf8987",
+      "raw_response_sha256": "00d0e9e15a54f54190d11033524829c059016307b55f8abfc318132e46954960",
+      "explanation_sha256": "00d0e9e15a54f54190d11033524829c059016307b55f8abfc318132e46954960"
     },
     {
       "solution_file": "solutions/07_batchnorm_solution.ipynb",
@@ -208,10 +208,10 @@
     {
       "solution_file": "solutions/23_cross_attention_solution.ipynb",
       "explanation_file": "explanations/23_cross_attention.md",
-      "solution_code_sha256": "a4e819d89e2537d8a71fbc1c1e3ff43a2d10e3c5b5f085816c028d5d4e3cb8ff",
-      "prompt_sha256": "1a4898969752d31f48ae8113c8ca043b7de5c91e579277640b76db777270ab2a",
-      "raw_response_sha256": "832e25e9335fa39f31059623accaed54e69f29975bd9def64579b77fd7b68448",
-      "explanation_sha256": "832e25e9335fa39f31059623accaed54e69f29975bd9def64579b77fd7b68448"
+      "solution_code_sha256": "5a66b36f272e55acfdab49fdccc13ee8b51b613c19375b8ddd336a3c22ba1331",
+      "prompt_sha256": "331267e84ea82625039dc1164f053028aa6a8015bffa5a9f663b794bae13abe7",
+      "raw_response_sha256": "02a05bdea45b853ad9b15fffd8db18450f2c237a185a31947b3fcc0eca537714",
+      "explanation_sha256": "02a05bdea45b853ad9b15fffd8db18450f2c237a185a31947b3fcc0eca537714"
     },
     {
       "solution_file": "solutions/24_rope_solution.ipynb",

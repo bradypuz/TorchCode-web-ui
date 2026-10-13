@@ -1,50 +1,55 @@
-This code implements **multi-head attention**: each position in `Q` looks at the positions in `K`, decides how relevant they are, and uses those relevance scores to combine the information in `V`.
+This code implements **multi-head scaled dot-product attention**, the mechanism used in Transformers.
 
-It is the core operation used in Transformer models.
+Its job is to let each position in a sequence gather information from other positions, with different attention heads learning different ways to decide what is relevant.
 
 ## 1. What are `Q`, `K`, and `V`?
 
-Think of attention as a lookup system:
+Attention uses three inputs:
 
-- **Query (`Q`)**: “What information am I looking for?”
-- **Key (`K`)**: “What information does each position offer?”
-- **Value (`V`)**: “What information should I return if this position is relevant?”
+- **Queries (`Q`)**: what each position is looking for.
+- **Keys (`K`)**: what each available position can be matched against.
+- **Values (`V`)**: the information retrieved from those positions.
 
-The expected input shapes are:
+For each query, attention:
+1. Compares it with every key.
+2. Converts those comparisons into weights.
+3. Computes a weighted average of the values.
 
-| Tensor | Shape | Meaning |
-|---|---|---|
-| `Q` | `(B, S_q, d_model)` | A batch of query sequences |
-| `K` | `(B, S_k, d_model)` | A batch of key sequences |
-| `V` | `(B, S_k, d_model)` | A batch of value sequences |
+For example, if the attention weights for a query are:
 
-Here:
-
-- `B` = batch size
-- `S_q` = number of query positions
-- `S_k` = number of key/value positions
-- `d_model` = number of features per position
-
-Keys and values must have matching sequence lengths, because each key corresponds to a value.
-
-For **self-attention**, you commonly pass the same tensor for all three:
-
-```python
-output = attention.forward(x, x, x)
+```text
+[0.1, 0.7, 0.2]
 ```
 
-For **cross-attention**, queries can come from one sequence while keys and values come from another.
+then its output is:
+
+```text
+0.1 × value_1 + 0.7 × value_2 + 0.2 × value_3
+```
+
+In **self-attention**, all three inputs usually start as the same sequence:
+
+```python
+attention.forward(x, x, x)
+```
+
+The learned projections then turn that sequence into different queries, keys, and values.
+
+In **cross-attention**, `Q` can come from one sequence while `K` and `V` come from another.
 
 ---
 
-## 2. Initialize the attention heads and projections
+## 2. Initialization
 
 ```python
-self.num_heads = num_heads
-self.d_k = d_model // num_heads
+def __init__(self, d_model: int, num_heads: int):
+    self.num_heads = num_heads
+    self.d_k = d_model // num_heads
 ```
 
-Instead of doing attention once using all features, the code does attention in several parallel **heads**. Each head uses `d_k` features.
+- `d_model` is the size of each input token’s feature vector.
+- `num_heads` is the number of attention heads.
+- `d_k` is the feature size used by each head.
 
 For example:
 
@@ -54,9 +59,11 @@ num_heads = 8
 d_k = 64
 ```
 
-Each of the eight heads performs attention using a 64-dimensional representation. Different heads can learn different relationships.
+Each head works with 64-dimensional queries, keys, and values.
 
-**This requires `d_model` to be divisible by `num_heads`.**
+**`d_model` must be divisible by `num_heads`** for the reshaping below to work.
+
+### Learned projections
 
 ```python
 self.W_q = nn.Linear(d_model, d_model)
@@ -65,203 +72,325 @@ self.W_v = nn.Linear(d_model, d_model)
 self.W_o = nn.Linear(d_model, d_model)
 ```
 
-These are learned linear transformations:
+These are four independently learned linear layers:
 
-- `W_q`: produces query features
-- `W_k`: produces key features
-- `W_v`: produces value features
-- `W_o`: combines the heads’ outputs into the final representation
+| Layer | Purpose |
+|---|---|
+| `W_q` | Convert input features into query features |
+| `W_k` | Convert input features into key features |
+| `W_v` | Convert input features into value features |
+| `W_o` | Mix the results from all heads into the final output |
 
-Even when `Q`, `K`, and `V` are initially the same tensor, these three different projections give them different roles.
+`nn.Linear` operates on the **last dimension**, so these layers preserve the batch and sequence dimensions.
 
-## 3. Project the inputs and split them into heads
+Although the features are split into heads afterward, each projection initially operates on the full input feature vector. The heads are therefore not simply restricted to fixed chunks of the original input.
+
+---
+
+## 3. Read the input dimensions
 
 ```python
 B, S_q, _ = Q.shape
 S_k = K.shape[1]
 ```
 
-These lines extract the batch size and sequence lengths.
-
-Now consider the query transformation:
-
-```python
-q = self.W_q(Q).view(B, S_q, self.num_heads, self.d_k).transpose(1, 2)
-```
-
-It happens in three steps:
+The expected input shapes are:
 
 ```text
-Linear projection:
-(B, S_q, d_model)
-
-Split features into heads:
-(B, S_q, num_heads, d_k)
-
-Move the head dimension before the sequence dimension:
-(B, num_heads, S_q, d_k)
+Q: [B, S_q, d_model]
+K: [B, S_k, d_model]
+V: [B, S_k, d_model]
 ```
+
+Here:
+
+- `B`: batch size.
+- `S_q`: number of query positions.
+- `S_k`: number of key/value positions.
+
+`S_q` and `S_k` do not have to be equal. For example, a decoder could have 5 query positions attending to 10 encoder positions.
+
+`K` and `V` must have the same sequence length because each key corresponds to one value.
+
+---
+
+## 4. Project the inputs and split them into heads
+
+```python
+q = self.W_q(Q).view(
+    B, S_q, self.num_heads, self.d_k
+).transpose(1, 2)
+```
+
+There are three operations here.
+
+### A. Project into query features
+
+```python
+self.W_q(Q)
+```
+
+Shape:
+
+```text
+[B, S_q, d_model]
+```
+
+### B. Split the feature dimension into heads
+
+```python
+.view(B, S_q, self.num_heads, self.d_k)
+```
+
+Shape:
+
+```text
+[B, S_q, num_heads, d_k]
+```
+
+For instance, a feature dimension of 512 becomes 8 heads with 64 features each.
+
+### C. Move the head dimension before the sequence dimension
+
+```python
+.transpose(1, 2)
+```
+
+Shape:
+
+```text
+[B, num_heads, S_q, d_k]
+```
+
+This arrangement lets PyTorch perform attention separately for every batch item and every head.
 
 The same process is applied to keys and values:
 
-```text
-q: (B, num_heads, S_q, d_k)
-k: (B, num_heads, S_k, d_k)
-v: (B, num_heads, S_k, d_k)
+```python
+k = self.W_k(K).view(B, S_k, self.num_heads, self.d_k).transpose(1, 2)
+v = self.W_v(V).view(B, S_k, self.num_heads, self.d_k).transpose(1, 2)
 ```
 
-With this arrangement, PyTorch can perform attention separately for every batch item and every head.
+Resulting shapes:
 
-## 4. Calculate how much each query should attend to each key
+```text
+q: [B, num_heads, S_q, d_k]
+k: [B, num_heads, S_k, d_k]
+v: [B, num_heads, S_k, d_k]
+```
+
+---
+
+## 5. Compute attention scores
 
 ```python
 scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
 ```
 
-First, the last two dimensions of `k` are swapped:
-
-```text
-k:                         (B, num_heads, S_k, d_k)
-k.transpose(-2, -1):        (B, num_heads, d_k, S_k)
-```
-
-Then matrix multiplication computes a dot product between every query and every key:
-
-```text
-scores: (B, num_heads, S_q, S_k)
-```
-
-So:
+First, this swaps the last two dimensions of `k`:
 
 ```python
-scores[b, h, i, j]
+k.transpose(-2, -1)
 ```
 
-measures how strongly query position `i` matches key position `j`, in head `h` of batch item `b`.
-
-The division by:
-
-```python
-math.sqrt(self.d_k)
+```text
+Before: [B, num_heads, S_k, d_k]
+After:  [B, num_heads, d_k, S_k]
 ```
 
-keeps the scores from growing too large as the head dimension increases. This helps prevent softmax from becoming excessively peaked and producing very small gradients.
+The matrix multiplication then has the form:
 
-This is why the operation is called **scaled dot-product attention**.
+```text
+[S_q, d_k] @ [d_k, S_k] → [S_q, S_k]
+```
 
-## 5. Turn scores into weights, then combine values
+It happens independently for every batch item and head, producing:
+
+```text
+scores: [B, num_heads, S_q, S_k]
+```
+
+Each score is a dot product between one query and one key:
+
+\[
+\text{score}_{i,j}=\frac{q_i\cdot k_j}{\sqrt{d_k}}
+\]
+
+A larger score means the model considers that key more relevant to that query.
+
+### Why divide by `sqrt(d_k)`?
+
+Dot products tend to have larger magnitudes as the feature dimension grows. Very large scores can make softmax excessively peaked, which can make optimization harder.
+
+Dividing by \(\sqrt{d_k}\) helps keep the scale of the scores under control.
+
+---
+
+## 6. Convert scores into attention weights
 
 ```python
 weights = torch.softmax(scores, dim=-1)
 ```
 
-Softmax is applied across the **key positions**.
+The last dimension is `S_k`, so softmax runs across all keys **for each query, in each head**.
 
-For each query and head, its attention weights:
-
-- are nonnegative
-- sum to 1
-
-For example, a query might assign:
+For example:
 
 ```text
-Key position:       0     1     2
-Attention weight:  0.1   0.7   0.2
+Scores:  [1.0, 3.0, 2.0]
+Weights: [0.09, 0.67, 0.24]  # approximately
 ```
 
-Then:
+The weights are nonnegative and sum to 1 across the key positions.
+
+The shape remains:
+
+```text
+weights: [B, num_heads, S_q, S_k]
+```
+
+---
+
+## 7. Take a weighted sum of the values
 
 ```python
 attn = torch.matmul(weights, v)
 ```
 
-forms a weighted sum of the value vectors:
+The matrix multiplication is:
 
 ```text
-output for this query = 0.1 × v₀ + 0.7 × v₁ + 0.2 × v₂
+[S_q, S_k] @ [S_k, d_k] → [S_q, d_k]
 ```
 
-The tensor shapes are:
+Therefore:
 
 ```text
-weights: (B, num_heads, S_q, S_k)
-v:       (B, num_heads, S_k, d_k)
-
-attn:    (B, num_heads, S_q, d_k)
+attn: [B, num_heads, S_q, d_k]
 ```
 
-Each query now has a new representation containing information gathered from the value sequence.
+For a particular query position \(i\), the result is:
 
-## 6. Merge the heads and produce the output
+\[
+\text{attn}_i=\sum_{j=1}^{S_k}\text{weights}_{i,j}\,v_j
+\]
+
+This is the information that query gathers from the value sequence.
+
+Each head produces its own result because it has its own projected queries, keys, and values.
+
+---
+
+## 8. Combine the heads
 
 ```python
-out = attn.transpose(1, 2).contiguous().view(B, S_q, -1)
+out = attn.transpose(1, 2).reshape(B, S_q, -1)
 ```
 
-This reverses the earlier head split:
+First:
 
 ```text
-(B, num_heads, S_q, d_k)
-              ↓ transpose
-(B, S_q, num_heads, d_k)
-              ↓ merge heads
-(B, S_q, d_model)
+[B, num_heads, S_q, d_k]
+                  ↓ transpose(1, 2)
+[B, S_q, num_heads, d_k]
 ```
 
-- `.transpose(1, 2)` reorders the dimensions.
-- `.contiguous()` makes the tensor’s memory layout suitable for the following `.view()`.
-- `.view(B, S_q, -1)` concatenates the head outputs along the feature dimension. The `-1` tells PyTorch to infer that dimension.
+Then `reshape` merges the final two dimensions:
 
-Finally:
+```text
+[B, S_q, num_heads × d_k]
+```
+
+Since:
+
+```text
+num_heads × d_k = d_model
+```
+
+the result is:
+
+```text
+out: [B, S_q, d_model]
+```
+
+This is effectively **concatenating the heads’ outputs** for each query position.
+
+Using `reshape` here is useful because the preceding `transpose` may produce a non-contiguous tensor; unlike `view`, `reshape` can make a copy when necessary.
+
+---
+
+## 9. Apply the output projection
 
 ```python
 return self.W_o(out)
 ```
 
-applies a learned transformation that mixes information across the heads.
+This learned linear layer mixes information across the concatenated heads.
 
-**Final output shape:**
+The final output shape is:
 
 ```text
-(B, S_q, d_model)
+[B, S_q, d_model]
 ```
 
-There is one output vector for each **query** position, even when the key/value sequence has a different length.
+Notice that the output sequence length is the **query length**, because attention produces one output vector per query.
 
-## The whole operation in one formula
+## Shape summary
 
-For each head:
+Let `H = num_heads` and `D = d_model`.
 
-\[
-\operatorname{Attention}(Q_h,K_h,V_h)
-=
-\operatorname{softmax}
-\left(
-\frac{Q_hK_h^\top}{\sqrt{d_k}}
-\right)V_h
-\]
+| Tensor | Shape |
+|---|---|
+| Input `Q` | `[B, S_q, D]` |
+| Input `K`, `V` | `[B, S_k, D]` |
+| Projected and split `q` | `[B, H, S_q, d_k]` |
+| Projected and split `k`, `v` | `[B, H, S_k, d_k]` |
+| `scores` | `[B, H, S_q, S_k]` |
+| `weights` | `[B, H, S_q, S_k]` |
+| `attn` | `[B, H, S_q, d_k]` |
+| Combined heads | `[B, S_q, D]` |
+| Final output | `[B, S_q, D]` |
 
-The head outputs are concatenated and passed through the output projection.
+## Important issues in this implementation
 
-## Important limitations of this implementation
+### 1. It should inherit from `nn.Module`
 
-1. **It should normally inherit from `nn.Module`.**  
-   As written, you can call `.forward(...)`, and autograd can track the computations, but the class does not integrate properly with standard PyTorch model APIs such as `.parameters()`, `.to(device)`, or calling the object as `attention(...)`.
+For normal PyTorch usage, the class should begin like this:
 
-   The usual structure is:
+```python
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model: int, num_heads: int):
+        super().__init__()
 
-   ```python
-   class MultiHeadAttention(nn.Module):
-       def __init__(self, d_model: int, num_heads: int):
-           super().__init__()
-           assert num_heads > 0 and d_model % num_heads == 0
-           # Remaining initialization...
-   ```
+        if num_heads <= 0 or d_model <= 0 or d_model % num_heads != 0:
+            raise ValueError("d_model must be positive and divisible by num_heads")
 
-2. **There is no attention mask.**  
-   Every query can attend to every key. This does not exclude padding or prevent access to future tokens in causal language modeling.
+        # Rest of initialization...
+```
 
-3. **There is no dropout.**  
-   Many Transformer implementations apply dropout to attention weights or outputs.
+Inheriting from `nn.Module` and calling `super().__init__()` registers the layers and enables standard functionality such as:
 
-**In short:** the code projects the inputs, splits them into heads, computes relevance weights, uses those weights to gather information from values, and merges the results into one output representation per query position.
+```python
+model.parameters()
+model.to(device)
+model.state_dict()
+model(Q, K, V)
+```
+
+The original code can still compute outputs and gradients through its individual linear layers, but it lacks this standard module interface and automatic registration.
+
+### 2. There is no attention mask
+
+As written, every query can attend to every key.
+
+That means it does **not**:
+- Ignore padding automatically.
+- Prevent attention to future tokens in causal self-attention.
+
+A mask would normally modify `scores` **before softmax**.
+
+### 3. This is attention, not a full Transformer block
+
+Residual connections, layer normalization, a feed-forward network, and dropout are not included.
+
+**In short: the code learns query–key similarities, uses them to gather value information in several heads, concatenates the results, and projects them back to `d_model` dimensions.**
