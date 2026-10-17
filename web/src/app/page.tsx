@@ -12,6 +12,8 @@ import { Play, RotateCcw, ChevronDown, Check, X, AlertCircle, Sparkles, ArrowUpR
 import SubmissionHistory, { type HistoricalSubmission } from './SubmissionHistory';
 import { Allotment } from "allotment";
 import "allotment/dist/style.css";
+import { useCodeTheme } from './useCodeTheme';
+import s from './workspace.module.css';
 
 const API_BASE = "http://localhost:8000/api";
 
@@ -111,6 +113,7 @@ export default function Home() {
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [solvedTasks, setSolvedTasks] = useState<Record<string, boolean>>({});
   const [userId, setUserId] = useState<string | null>(null);
+  const { theme } = useCodeTheme(userId);
   const [profileName, setProfileName] = useState('You');
   const [hintUsed, setHintUsed] = useState(false);
   const [hintResetCounter, setHintResetCounter] = useState(0);
@@ -374,24 +377,24 @@ export default function Home() {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-[#1e1e1e] text-white font-sans">
+    <div className={`${s.workspace} flex flex-col h-screen bg-[var(--workspace-bg)] text-[var(--workspace-ink)] font-sans`} data-code-theme={theme}>
       {/* Top Navbar */}
-      <nav className="flex items-center justify-between px-6 py-3 bg-[#2d2d2d] border-b border-[#404040]">
+      <nav className="flex items-center justify-between px-6 py-3 bg-[var(--workspace-raised)] border-b border-[var(--workspace-border)]">
         <div className="flex items-center space-x-4">
           <span className="text-xl font-bold bg-gradient-to-r from-orange-400 to-red-500 bg-clip-text text-transparent">
             TorchCode
           </span>
-          <div className="h-6 w-px bg-gray-600 mx-2"></div>
+          <div className="h-6 w-px bg-[var(--workspace-border-strong)] mx-2"></div>
           {/* Task Selector */}
           <div className="relative">
             <button 
               onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-              className="flex items-center justify-between w-[22rem] bg-[#3c3c3c] hover:bg-[#4c4c4c] transition-colors text-white px-4 py-2 rounded-md outline-none focus:ring-2 focus:ring-orange-500 cursor-pointer font-medium"
+              className="flex items-center justify-between w-[22rem] bg-[var(--workspace-hover)] hover:bg-[var(--workspace-hover-strong)] transition-colors text-[var(--workspace-ink)] px-4 py-2 rounded-md outline-none focus:ring-2 focus:ring-orange-500 cursor-pointer font-medium"
             >
               <span className="truncate pr-4 text-left flex-1">
                 {taskDetails ? `${taskDetails.title} (${taskDetails.difficulty})` : 'Select a problem...'}
               </span>
-              <ChevronDown className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`} />
+              <ChevronDown className={`w-4 h-4 text-[var(--workspace-muted)] flex-shrink-0 transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`} />
             </button>
 
             {isDropdownOpen && (
@@ -400,7 +403,7 @@ export default function Home() {
                   className="fixed inset-0 z-40" 
                   onClick={() => setIsDropdownOpen(false)}
                 ></div>
-                <div className="absolute top-full left-0 mt-2 w-96 max-h-[70vh] overflow-y-auto bg-[#2d2d2d] border border-[#404040] rounded-md shadow-2xl z-50 py-2">
+                <div className="absolute top-full left-0 mt-2 w-96 max-h-[70vh] overflow-y-auto bg-[var(--workspace-raised)] border border-[var(--workspace-border)] rounded-md shadow-2xl z-50 py-2">
                   {[
                     { label: '🟢 Easy', diff: 'Easy' },
                     { label: '🟡 Medium', diff: 'Medium' },
@@ -410,7 +413,7 @@ export default function Home() {
                     if (groupTasks.length === 0) return null;
                     return (
                       <div key={group.diff} className="mb-2">
-                        <div className="px-4 py-1.5 text-xs font-bold text-gray-400 uppercase tracking-wider bg-[#252526]">
+                        <div className="px-4 py-1.5 text-xs font-bold text-[var(--workspace-muted)] uppercase tracking-wider bg-[var(--workspace-surface)]">
                           {group.label}
                         </div>
                         {groupTasks.map(t => (
@@ -419,11 +422,11 @@ export default function Home() {
                             onClick={() => {
                               handleSelectTask(t.id);
                             }}
-                            className={`w-full text-left px-4 py-2 text-sm hover:bg-[#3c3c3c] transition-colors flex items-center
-                              ${selectedTaskId === t.id ? 'bg-[#3c3c3c] text-orange-400 font-semibold' : 'text-gray-200'}
+                            className={`w-full text-left px-4 py-2 text-sm hover:bg-[var(--workspace-hover)] transition-colors flex items-center
+                              ${selectedTaskId === t.id ? 'bg-[var(--workspace-hover)] text-[var(--workspace-accent)] font-semibold' : 'text-[var(--workspace-text)]'}
                             `}
                           >
-                            <span className={`truncate ${solvedTasks[t.id] ? 'line-through text-gray-500' : ''}`}>
+                            <span className={`truncate ${solvedTasks[t.id] ? 'line-through text-[var(--workspace-faint)]' : ''}`}>
                               {t.title}
                             </span>
                           </button>
@@ -440,18 +443,18 @@ export default function Home() {
         <div className="flex items-center space-x-3">
           <a
             href={`http://localhost:4000/?user=${encodeURIComponent(userId || 'local')}`}
-            className="flex items-center gap-2 rounded-md border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-sm font-medium text-emerald-300 transition-colors hover:border-emerald-400/50 hover:bg-emerald-400/20"
+            className="flex items-center gap-2 rounded-md border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-sm font-medium text-[var(--workspace-emerald)] transition-colors hover:border-emerald-400/50 hover:bg-emerald-400/20"
             title={`Open ${profileName}'s practice dashboard`}
           >
             <Sparkles className="h-4 w-4" />
             <span>My practice</span>
-            <span className="hidden xl:inline border-l border-emerald-400/25 pl-2 text-xs text-emerald-200/70">{profileName}</span>
+            <span className="hidden xl:inline border-l border-emerald-400/25 pl-2 text-xs text-[var(--workspace-emerald)]/70">{profileName}</span>
             <ArrowUpRight className="h-3.5 w-3.5" />
           </a>
           <button 
             onClick={handleReset}
             disabled={!taskDetails || taskDetails.id !== selectedTaskId || isSubmitting || isLoadingHistory}
-            className="flex items-center px-4 py-2 rounded-md bg-[#3c3c3c] hover:bg-[#4c4c4c] disabled:opacity-50 transition-colors"
+            className="flex items-center px-4 py-2 rounded-md bg-[var(--workspace-hover)] hover:bg-[var(--workspace-hover-strong)] disabled:opacity-50 transition-colors"
           >
             <RotateCcw className="w-4 h-4 mr-2" />
             Reset
@@ -459,7 +462,7 @@ export default function Home() {
           <button 
             onClick={handleRunCode}
             disabled={isSubmitting || isLoadingHistory || !taskDetails || taskDetails.id !== selectedTaskId}
-            className="flex items-center px-6 py-2 rounded-md bg-green-600 hover:bg-green-500 disabled:opacity-50 transition-colors font-medium"
+            className={`${s.runButton} flex items-center px-6 py-2 rounded-md bg-green-600 hover:bg-green-500 disabled:opacity-50 transition-colors font-medium`}
           >
             {isSubmitting ? (
               <span className="animate-spin mr-2">⏳</span>
@@ -479,28 +482,28 @@ export default function Home() {
           onChange={handlePaneSizesChange}
         >
           {/* Left Pane: Problem Description / Results Tab */}
-          <div className="h-full min-h-0 min-w-0 flex flex-col border-r border-[#404040] bg-[#1e1e1e]">
+          <div className="h-full min-h-0 min-w-0 flex flex-col border-r border-[var(--workspace-border)] bg-[var(--workspace-bg)]">
             {/* Tabs */}
-          <div className="flex border-b border-[#404040] bg-[#252526]">
+          <div className="flex border-b border-[var(--workspace-border)] bg-[var(--workspace-surface)]">
             <button 
-              className={`px-6 py-3 font-medium transition-colors ${activeTab === 'problem' ? 'text-white border-b-2 border-orange-500 bg-[#1e1e1e]' : 'text-gray-400 hover:text-gray-200'}`}
+              className={`px-6 py-3 font-medium transition-colors ${activeTab === 'problem' ? 'text-[var(--workspace-ink)] border-b-2 border-orange-500 bg-[var(--workspace-bg)]' : 'text-[var(--workspace-muted)] hover:text-[var(--workspace-text)]'}`}
               onClick={() => setActiveTab('problem')}
             >
               Problem
             </button>
             <button 
-              className={`px-6 py-3 font-medium transition-colors ${activeTab === 'results' ? 'text-white border-b-2 border-green-500 bg-[#1e1e1e]' : 'text-gray-400 hover:text-gray-200'}`}
+              className={`px-6 py-3 font-medium transition-colors ${activeTab === 'results' ? 'text-[var(--workspace-ink)] border-b-2 border-green-500 bg-[var(--workspace-bg)]' : 'text-[var(--workspace-muted)] hover:text-[var(--workspace-text)]'}`}
               onClick={() => setActiveTab('results')}
             >
               Test Results
               {results && (
-                <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${results.success ? 'bg-green-600/20 text-green-400' : 'bg-red-600/20 text-red-400'}`}>
+                <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${results.success ? 'bg-green-600/20 text-[var(--workspace-success)]' : 'bg-red-600/20 text-[var(--workspace-danger)]'}`}>
                   {results.passed}/{results.total}
                 </span>
               )}
             </button>
             <button
-              className={`flex items-center gap-2 px-5 py-3 font-medium transition-colors disabled:opacity-50 ${activeTab === 'history' ? 'text-white border-b-2 border-orange-400 bg-[#1e1e1e]' : 'text-gray-400 hover:text-gray-200'}`}
+              className={`flex items-center gap-2 px-5 py-3 font-medium transition-colors disabled:opacity-50 ${activeTab === 'history' ? 'text-[var(--workspace-ink)] border-b-2 border-orange-400 bg-[var(--workspace-bg)]' : 'text-[var(--workspace-muted)] hover:text-[var(--workspace-text)]'}`}
               onClick={() => setActiveTab('history')}
               disabled={!taskDetails || taskDetails.id !== selectedTaskId}
               aria-pressed={activeTab === 'history'}
@@ -524,21 +527,21 @@ export default function Home() {
                 onLoad={handleLoadSubmission}
                 onUndo={handleUndoHistoryLoad}
                 onLoadingChange={setIsLoadingHistory}
-              /> : <p className="text-gray-400">Choose a problem to view its submissions.</p>
+              /> : <p className="text-[var(--workspace-muted)]">Choose a problem to view its submissions.</p>
             ) : activeTab === 'problem' ? (
               <div className="markdown-body">
                 {taskDetails ? (
                   <>
-                    <h1 className="text-2xl font-semibold mb-4 text-white">{taskDetails.title}</h1>
+                    <h1 className="text-2xl font-semibold mb-4 text-[var(--workspace-ink)]">{taskDetails.title}</h1>
                     <div className="flex items-center space-x-4 mb-6">
                       <span className={`px-2.5 py-1 rounded-full text-xs font-medium 
-                        ${taskDetails.difficulty === 'Easy' ? 'bg-[#2c4034] text-[#2cbb5d]' : 
-                          taskDetails.difficulty === 'Medium' ? 'bg-[#403622] text-[#ffc01e]' : 
-                          'bg-[#402a2a] text-[#ef4743]'}`}>
+                        ${taskDetails.difficulty === 'Easy' ? 'bg-green-500/10 text-[var(--workspace-success)]' :
+                          taskDetails.difficulty === 'Medium' ? 'bg-amber-500/10 text-[var(--workspace-warning)]' :
+                          'bg-red-500/10 text-[var(--workspace-danger)]'}`}>
                         {taskDetails.difficulty}
                       </span>
                       {selectedTaskId && solvedTasks[selectedTaskId] && (
-                        <div className="flex items-center text-[#2cbb5d] text-sm font-medium">
+                        <div className="flex items-center text-[var(--workspace-success)] text-sm font-medium">
                           <Check className="w-4 h-4 mr-1" strokeWidth={3} />
                           Solved
                         </div>
@@ -551,7 +554,7 @@ export default function Home() {
                       {taskDetails.description}
                     </ReactMarkdown>
                     {taskDetails.hint && (
-                      <div className="mt-8 border-t border-[#404040] pt-6">
+                      <div className="mt-8 border-t border-[var(--workspace-border)] pt-6">
                         <details
                           key={`${selectedTaskId}:${hintResetCounter}`}
                           className="group"
@@ -559,11 +562,11 @@ export default function Home() {
                             if (event.currentTarget.open) setHintUsed(true);
                           }}
                         >
-                          <summary className="flex items-center cursor-pointer list-none font-medium text-gray-300 hover:text-white transition-colors">
+                          <summary className="flex items-center cursor-pointer list-none font-medium text-[var(--workspace-subtle)] hover:text-[var(--workspace-ink)] transition-colors">
                             <span className="mr-2">💡</span> Hint
                             <ChevronDown className="w-4 h-4 ml-auto group-open:rotate-180 transition-transform" />
                           </summary>
-                          <div className="mt-4 text-gray-400 text-sm pl-6 border-l-2 border-[#404040] py-1 markdown-body bg-transparent">
+                          <div className="mt-4 text-[var(--workspace-muted)] text-sm pl-6 border-l-2 border-[var(--workspace-border)] py-1 markdown-body bg-transparent">
                             <ReactMarkdown 
                               remarkPlugins={[remarkGfm, remarkMath]}
                               rehypePlugins={[rehypeKatex]}
@@ -576,7 +579,7 @@ export default function Home() {
                     )}
                   </>
                 ) : (
-                  <div className={taskError ? 'text-red-300' : 'text-gray-500'} role={taskError ? 'alert' : undefined}>
+                  <div className={taskError ? 'text-[var(--workspace-danger)]' : 'text-[var(--workspace-faint)]'} role={taskError ? 'alert' : undefined}>
                     {taskError || 'Loading problem...'}
                   </div>
                 )}
@@ -584,68 +587,68 @@ export default function Home() {
             ) : (
               <div className="results-pane">
                 {isSubmitting ? (
-                  <div className="flex items-center justify-center h-full text-gray-400">
+                  <div className="flex items-center justify-center h-full text-[var(--workspace-muted)]">
                     Executing PyTorch code...
                   </div>
                 ) : results ? (
                   <div className="space-y-6">
-                    <div className={`text-2xl font-bold ${results.success ? 'text-green-400' : 'text-red-400'}`}>
+                    <div className={`text-2xl font-bold ${results.success ? 'text-[var(--workspace-success)]' : 'text-[var(--workspace-danger)]'}`}>
                       {results.success ? "Accepted" : "Wrong Answer"}
                     </div>
 
                     {results.success && (
                       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 text-sm">
-                        <span className="mr-auto text-gray-300">Nice work. How confident do you feel?</span>
+                        <span className="mr-auto text-[var(--workspace-subtle)]">Nice work. How confident do you feel?</span>
                         <button
                           onClick={handleRequestReview}
                           disabled={reviewState === 'saving' || reviewState === 'saved'}
-                          className="flex items-center gap-2 rounded-md border border-[#4c4c4c] bg-[#333333] px-3 py-2 text-gray-200 transition-colors hover:bg-[#404040] disabled:cursor-default disabled:border-emerald-500/25 disabled:bg-emerald-500/10 disabled:text-emerald-300"
+                          className="flex items-center gap-2 rounded-md border border-[var(--workspace-border-strong)] bg-[var(--workspace-control)] px-3 py-2 text-[var(--workspace-text)] transition-colors hover:bg-[var(--workspace-border)] disabled:cursor-default disabled:border-emerald-500/25 disabled:bg-emerald-500/10 disabled:text-[var(--workspace-emerald)]"
                         >
                           {reviewState === 'saved' ? <Check className="h-4 w-4" /> : <RotateCcw className="h-4 w-4" />}
                           {reviewState === 'saved' ? 'Added to review' : reviewState === 'saving' ? 'Saving...' : 'Need more practice'}
                         </button>
-                        {reviewState === 'error' && <span className="w-full text-xs text-red-300" role="alert">Could not save. Try again.</span>}
+                        {reviewState === 'error' && <span className="w-full text-xs text-[var(--workspace-danger)]" role="alert">Could not save. Try again.</span>}
                       </div>
                     )}
 
                     {results.error && (
-                      <div className="p-4 bg-red-900/30 border border-red-900 rounded-lg text-red-300">
+                      <div className="p-4 bg-[var(--workspace-danger-bg)] border border-[var(--workspace-danger-border)] rounded-lg text-[var(--workspace-danger)]">
                         <div className="font-semibold mb-2 flex items-center">
                           <AlertCircle className="w-5 h-5 mr-2" /> Error
                         </div>
                         <pre className="whitespace-pre-wrap text-sm">{results.error}</pre>
                         {results.traceback && (
-                          <pre className="whitespace-pre-wrap text-xs mt-2 text-red-400/80">{results.traceback}</pre>
+                          <pre className="whitespace-pre-wrap text-xs mt-2 text-[var(--workspace-danger)]/80">{results.traceback}</pre>
                         )}
                       </div>
                     )}
 
                     {results.tests && results.tests.length > 0 && (
                       <div className="space-y-4">
-                        <h3 className="text-lg font-medium text-gray-200 border-b border-gray-700 pb-2">Test Cases</h3>
+                        <h3 className="text-lg font-medium text-[var(--workspace-text)] border-b border-[var(--workspace-border)] pb-2">Test Cases</h3>
                         {results.tests.map((test, idx) => (
-                          <div key={idx} className="bg-[#2d2d2d] rounded-lg border border-[#404040] overflow-hidden">
-                            <div className="flex items-center justify-between p-4 bg-[#333333]">
+                          <div key={idx} className="bg-[var(--workspace-raised)] rounded-lg border border-[var(--workspace-border)] overflow-hidden">
+                            <div className="flex items-center justify-between p-4 bg-[var(--workspace-control)]">
                               <div className="flex items-center space-x-3">
                                 {test.passed ? (
-                                  <Check className="w-5 h-5 text-green-500" />
+                                  <Check className="w-5 h-5 text-[var(--workspace-success)]" />
                                 ) : (
-                                  <X className="w-5 h-5 text-red-500" />
+                                  <X className="w-5 h-5 text-[var(--workspace-danger)]" />
                                 )}
-                                <span className="font-medium text-gray-200">Case {idx + 1}: {test.name}</span>
+                                <span className="font-medium text-[var(--workspace-text)]">Case {idx + 1}: {test.name}</span>
                               </div>
-                              <span className="text-xs text-gray-500">{test.time_ms.toFixed(1)}ms</span>
+                              <span className="text-xs text-[var(--workspace-faint)]">{test.time_ms.toFixed(1)}ms</span>
                             </div>
 
                             {/* Test Code Viewer */}
                             {test.code && (
-                              <div className="border-t border-[#404040]">
+                              <div className="border-t border-[var(--workspace-border)]">
                                 <details className="group">
-                                  <summary className="flex items-center cursor-pointer list-none text-xs font-medium text-gray-400 hover:text-gray-200 px-4 py-2 bg-[#2a2a2a] transition-colors">
+                                  <summary className="flex items-center cursor-pointer list-none text-xs font-medium text-[var(--workspace-muted)] hover:text-[var(--workspace-text)] px-4 py-2 bg-[var(--workspace-raised)] transition-colors">
                                     <ChevronDown className="w-3 h-3 mr-2 group-open:rotate-180 transition-transform" />
                                     Test Source Code
                                   </summary>
-                                  <div className="bg-[#1e1e1e] p-4 text-xs font-mono text-gray-300 overflow-x-auto">
+                                  <div className="bg-[var(--workspace-bg)] p-4 text-xs font-mono text-[var(--workspace-subtle)] overflow-x-auto">
                                     <pre>{test.code}</pre>
                                   </div>
                                 </details>
@@ -654,21 +657,21 @@ export default function Home() {
                             
                             {/* Failed Assertions */}
                             {!test.passed && test.error_msg && (
-                              <div className="p-4 border-t border-[#404040] bg-red-900/10">
-                                <code className="text-xs text-red-300 bg-red-950/50 px-2 py-1 rounded block whitespace-pre-wrap">
+                              <div className="p-4 border-t border-[var(--workspace-border)] bg-[var(--workspace-danger-bg)]">
+                                <code className="text-xs text-[var(--workspace-danger)] bg-[var(--workspace-danger-bg)] px-2 py-1 rounded block whitespace-pre-wrap">
                                   {test.error_msg}
                                 </code>
                                 {test.error_traceback && (
-                                   <pre className="text-xs text-gray-400 mt-3 overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">{test.error_traceback}</pre>
+                                   <pre className="text-xs text-[var(--workspace-muted)] mt-3 overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">{test.error_traceback}</pre>
                                 )}
                               </div>
                             )}
 
                             {/* Stdout / Stderr for specific test if any */}
                             {test.stdout && (
-                              <div className="p-4 border-t border-[#404040]">
-                                <div className="text-xs text-gray-400 mb-1">Standard Output</div>
-                                <pre className="text-xs text-gray-300 bg-[#1e1e1e] p-2 rounded">{test.stdout}</pre>
+                              <div className="p-4 border-t border-[var(--workspace-border)]">
+                                <div className="text-xs text-[var(--workspace-muted)] mb-1">Standard Output</div>
+                                <pre className="text-xs text-[var(--workspace-subtle)] bg-[var(--workspace-bg)] p-2 rounded">{test.stdout}</pre>
                               </div>
                             )}
                           </div>
@@ -679,16 +682,16 @@ export default function Home() {
                     {/* Global Stdout */}
                     {results.stdout && (
                       <div>
-                        <h3 className="text-lg font-medium text-gray-200 border-b border-gray-700 pb-2 mb-3">Global Output</h3>
-                        <pre className="p-4 bg-[#2d2d2d] rounded-lg text-sm font-mono overflow-x-auto border border-[#404040]">
+                        <h3 className="text-lg font-medium text-[var(--workspace-text)] border-b border-[var(--workspace-border)] pb-2 mb-3">Global Output</h3>
+                        <pre className="p-4 bg-[var(--workspace-raised)] rounded-lg text-sm font-mono overflow-x-auto border border-[var(--workspace-border)]">
                           {results.stdout}
                         </pre>
                       </div>
                     )}
                   </div>
                 ) : (
-                  <div className="flex flex-col items-center justify-center h-full text-gray-500 space-y-4 mt-20">
-                    <Play className="w-16 h-16 text-[#333333]" />
+                  <div className="flex flex-col items-center justify-center h-full text-[var(--workspace-faint)] space-y-4 mt-20">
+                    <Play className="w-16 h-16 text-[var(--workspace-hover)]" />
                     <p>Run your code to see results here.</p>
                   </div>
                 )}
@@ -698,19 +701,19 @@ export default function Home() {
           </div>
 
           {/* Right Pane: Code Editor */}
-          <div className="h-full min-h-0 min-w-0 flex flex-col bg-[#1e1e1e]">
-            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 bg-[#252526] border-b border-[#404040] text-sm text-gray-400">
-              <span className="font-medium text-gray-300 flex items-center">
+          <div className="h-full min-h-0 min-w-0 flex flex-col bg-[var(--workspace-bg)]">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 bg-[var(--workspace-surface)] border-b border-[var(--workspace-border)] text-sm text-[var(--workspace-muted)]">
+              <span className="font-medium text-[var(--workspace-subtle)] flex items-center">
                 <span className="w-2 h-2 rounded-full bg-green-500 mr-2"></span> Python (PyTorch)
               </span>
               <div className="flex items-center gap-3">
-                {loadedSubmission && <span className="text-xs text-orange-300">Loaded #{loadedSubmission.id}</span>}
+                {loadedSubmission && <span className="text-xs text-[var(--workspace-accent)]">Loaded #{loadedSubmission.id}</span>}
                 <button
                   onClick={() => setActiveTab(activeTab === 'history' ? 'problem' : 'history')}
                   disabled={!taskDetails || taskDetails.id !== selectedTaskId}
                   aria-expanded={activeTab === 'history'}
                   aria-controls="submission-history-pane"
-                  className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${activeTab === 'history' ? 'border-orange-400/40 bg-orange-400/10 text-orange-200' : 'border-[#454545] text-gray-300 hover:bg-[#333333]'}`}
+                  className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${activeTab === 'history' ? 'border-orange-400/40 bg-orange-400/10 text-[var(--workspace-accent)]' : 'border-[var(--workspace-border-strong)] text-[var(--workspace-subtle)] hover:bg-[var(--workspace-control)]'}`}
                 ><History className="h-3.5 w-3.5" />Submission history</button>
               </div>
             </div>
@@ -718,7 +721,7 @@ export default function Home() {
               <Editor
                 height="100%"
                 language="python"
-                theme="vs-dark"
+                theme={theme === 'dark' ? 'vs-dark' : 'light'}
                 value={code}
                 onMount={handleEditorMount}
                 onChange={(value) => {
@@ -739,6 +742,10 @@ export default function Home() {
                   smoothScrolling: true,
                   cursorBlinking: "smooth",
                   cursorSmoothCaretAnimation: "on",
+                  tabSize: 4,
+                  insertSpaces: true,
+                  detectIndentation: false,
+                  renderWhitespace: "none",
                   formatOnPaste: true,
                   readOnly: !taskDetails || taskDetails.id !== selectedTaskId,
                 }}

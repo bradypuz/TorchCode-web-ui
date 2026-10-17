@@ -13,7 +13,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -100,6 +100,10 @@ class PracticeStore:
             connection.executescript("""
                 CREATE TABLE IF NOT EXISTS profiles (
                     id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS appearance_preferences (
+                    user_id TEXT PRIMARY KEY REFERENCES profiles(id),
+                    theme TEXT NOT NULL CHECK (theme IN ('dark', 'light'))
                 );
                 CREATE TABLE IF NOT EXISTS attempts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -204,6 +208,25 @@ class PracticeStore:
             connection.execute("INSERT INTO profiles VALUES (?, ?, ?)",
                                (result["id"], result["name"], timestamp(utc_now())))
         return result
+
+    def appearance(self, user_id: str) -> dict[str, str]:
+        self.profile(user_id)
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT theme FROM appearance_preferences WHERE user_id = ?", (user_id,)).fetchone()
+        # Existing learners retain the dark code editor until they choose a theme.
+        return {"theme": row["theme"] if row else "dark"}
+
+    def set_appearance(self, user_id: str, theme: str) -> dict[str, str]:
+        self.profile(user_id)
+        if theme not in ("dark", "light"):
+            raise HTTPException(status_code=422, detail="Choose dark or light mode")
+        with self.connection() as connection:
+            connection.execute("""
+                INSERT INTO appearance_preferences (user_id, theme) VALUES (?, ?)
+                ON CONFLICT (user_id) DO UPDATE SET theme = excluded.theme
+            """, (user_id, theme))
+        return {"theme": theme}
 
     def _import_notebook_progress(self) -> None:
         # This file stores aggregate state, not a reliable dated attempt log.
@@ -626,6 +649,11 @@ class ProfileRequest(BaseModel):
     name: str = Field(min_length=1, max_length=40)
 
 
+class AppearanceRequest(BaseModel):
+    user_id: str = "local"
+    theme: Literal["dark", "light"]
+
+
 class ImportRequest(BaseModel):
     user_id: str = "local"
     solved_task_ids: list[str] = Field(default_factory=list, max_length=1000)
@@ -645,6 +673,16 @@ def list_profiles():
 @router.post("/profiles")
 def create_profile(request: ProfileRequest):
     return get_store().create_profile(request.name)
+
+
+@router.get("/appearance")
+def get_appearance(user_id: str = "local"):
+    return get_store().appearance(user_id)
+
+
+@router.put("/appearance")
+def set_appearance(request: AppearanceRequest):
+    return get_store().set_appearance(request.user_id, request.theme)
 
 
 @router.get("/dashboard")

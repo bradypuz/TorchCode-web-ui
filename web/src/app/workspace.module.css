@@ -1,0 +1,68 @@
+.workspace {
+  --workspace-bg: #1e1e1e;
+  --workspace-surface: #252526;
+  --workspace-raised: #2d2d2d;
+  --workspace-control: #333333;
+  --workspace-hover: #3c3c3c;
+  --workspace-hover-strong: #4c4c4c;
+  --workspace-border: #404040;
+  --workspace-border-strong: #454545;
+  --workspace-ink: #ffffff;
+  --workspace-text: #e5e7eb;
+  --workspace-subtle: #d1d5db;
+  --workspace-muted: #9ca3af;
+  --workspace-faint: #6b7280;
+  --workspace-success: #4ade80;
+  --workspace-emerald: #6ee7b7;
+  --workspace-warning: #fde68a;
+  --workspace-accent: #fdba74;
+  --workspace-danger: #fca5a5;
+  --workspace-danger-bg: #7f1d1d4d;
+  --workspace-danger-border: #7f1d1d;
+  --workspace-code-bg: #3e3e42;
+  --workspace-inline-code: #ffffff1a;
+  color-scheme: dark;
+}
+
+.workspace[data-code-theme="light"] {
+  --workspace-bg: #ffffff;
+  --workspace-surface: #f5f7fa;
+  --workspace-raised: #eef1f5;
+  --workspace-control: #e9edf2;
+  --workspace-hover: #e2e7ef;
+  --workspace-hover-strong: #d5dce6;
+  --workspace-border: #d5dbe3;
+  --workspace-border-strong: #c5cdd7;
+  --workspace-ink: #17212d;
+  --workspace-text: #263244;
+  --workspace-subtle: #42516a;
+  --workspace-muted: #5b677a;
+  --workspace-faint: #68758a;
+  --workspace-success: #167c3b;
+  --workspace-emerald: #11674e;
+  --workspace-warning: #865a08;
+  --workspace-accent: #b54708;
+  --workspace-danger: #b42332;
+  --workspace-danger-bg: #fff0f0;
+  --workspace-danger-border: #f3c4c4;
+  --workspace-code-bg: #f0f3f7;
+  --workspace-inline-code: #24384a0a;
+  color-scheme: light;
+}
+
+.workspace :global(.markdown-body) { color: var(--workspace-text); }
+.workspace :global(.markdown-body h1),
+.workspace :global(.markdown-body h2),
+.workspace :global(.markdown-body h3),
+.workspace :global(.markdown-body h4) { color: var(--workspace-ink); }
+.workspace :global(.markdown-body pre) { background: var(--workspace-code-bg); color: var(--workspace-text); }
+.workspace :global(.markdown-body code) { background: var(--workspace-inline-code); color: var(--workspace-text); }
+.workspace :global(.markdown-body pre code) { background: transparent; }
+.workspace :global(.markdown-body a) { color: var(--workspace-accent); text-decoration: underline; }
+.workspace :global(.markdown-body table) { border-collapse: collapse; width: 100%; }
+.workspace :global(.markdown-body th), .workspace :global(.markdown-body td) { border: 1px solid var(--workspace-border); padding: 8px 10px; }
+.workspace :global(.markdown-body th) { background: var(--workspace-surface); }
+.workspace ::-webkit-scrollbar-track { background: var(--workspace-bg); }
+.workspace ::-webkit-scrollbar-thumb { background: var(--workspace-hover-strong); }
+.workspace ::-webkit-scrollbar-thumb:hover { background: var(--workspace-faint); }
+.runButton { color: #ffffff; }

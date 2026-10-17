@@ -8,11 +8,12 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { ArrowRight, BookOpen, Check, Code2, Copy, Maximize2, Minimize2, RefreshCw, Sparkles, X } from 'lucide-react';
+import { useCodeTheme } from '../useCodeTheme';
 import s from './solution.module.css';
 import ExplanationVisual from './ExplanationVisual';
 import { normalizeExplanationMarkdown } from './explanationMarkdown';
 import { EXPLANATION_VISUALS } from './explanationVisuals';
-import MermaidDiagram, { MermaidVisibilityContext } from './MermaidDiagram';
+import MermaidDiagram, { MermaidThemeContext, MermaidVisibilityContext } from './MermaidDiagram';
 
 type Solution = {
   id: string;
@@ -25,6 +26,7 @@ type Solution = {
 type Props = { taskId: string; user: string; onClose: () => void };
 
 export default function SolutionDialog({ taskId, user, onClose }: Props) {
+  const { theme } = useCodeTheme(user);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [solution, setSolution] = useState<Solution | null>(null);
   const [tab, setTab] = useState<'code' | 'explanation'>('code');
@@ -93,6 +95,7 @@ export default function SolutionDialog({ taskId, user, onClose }: Props) {
   return <dialog
     ref={dialogRef}
     className={`${s.dialog} ${fullscreen ? s.fullscreen : ''}`}
+    data-code-theme={theme}
     aria-labelledby="solution-title"
     onCancel={event => { event.preventDefault(); if (fullscreen) setFullscreen(false); else onClose(); }}
     onClick={event => {
@@ -119,10 +122,10 @@ export default function SolutionDialog({ taskId, user, onClose }: Props) {
       <section id="solution-code-panel" role="tabpanel" aria-labelledby="solution-code-tab" hidden={tab !== 'code'} className={s.codePanel}>
         <div className={s.codeToolbar}><span><i /> Python · PyTorch</span><button onClick={() => void copyCode()}>{copied ? <Check size={14} /> : <Copy size={14} />}{copied ? 'Copied!' : 'Copy code'}</button></div>
         {copyError && <p className={s.copyError} role="status">{copyError}</p>}
-        <div className={s.editor}><Editor language="python" theme="vs-dark" value={solution.code} loading={<span className={s.editorLoading}>Loading code…</span>} options={{ readOnly: true, domReadOnly: true, minimap: { enabled: false }, automaticLayout: true, fontSize: 13, lineHeight: 23, scrollBeyondLastLine: false, padding: { top: 17, bottom: 17 }, renderLineHighlight: 'none', contextmenu: false, wordWrap: 'on', scrollbar: { verticalScrollbarSize: 7, horizontalScrollbarSize: 7 } }} /></div>
+        <div className={s.editor}><Editor language="python" theme={theme === 'dark' ? 'vs-dark' : 'light'} value={solution.code} loading={<span className={s.editorLoading}>Loading code…</span>} options={{ readOnly: true, domReadOnly: true, minimap: { enabled: false }, automaticLayout: true, fontSize: 13, lineHeight: 23, scrollBeyondLastLine: false, padding: { top: 17, bottom: 17 }, renderLineHighlight: 'none', renderWhitespace: 'none', contextmenu: false, wordWrap: 'on', scrollbar: { verticalScrollbarSize: 7, horizontalScrollbarSize: 7 } }} /></div>
       </section>
       <section id="solution-explanation-panel" role="tabpanel" aria-labelledby="solution-explanation-tab" hidden={tab !== 'explanation'} className={s.explanationPanel} tabIndex={0}>
-        <MermaidVisibilityContext.Provider value={tab === 'explanation'}><div className={s.explanation}><article className={s.answer}><ReactMarkdown
+        <MermaidThemeContext.Provider value={theme}><MermaidVisibilityContext.Provider value={tab === 'explanation'}><div className={s.explanation}><article className={s.answer}><ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[rehypeKatex]}
           components={markdownComponents}
@@ -130,7 +133,7 @@ export default function SolutionDialog({ taskId, user, onClose }: Props) {
           <summary>Explore an interactive example</summary>
           <p className={s.supplementNote}>A supplemental practice tool for this concept, separate from the explanation above.</p>
           <ExplanationVisual kind={visualKind} taskId={taskId} />
-        </details>}</div></MermaidVisibilityContext.Provider>
+        </details>}</div></MermaidVisibilityContext.Provider></MermaidThemeContext.Provider>
       </section>
     </>}
 

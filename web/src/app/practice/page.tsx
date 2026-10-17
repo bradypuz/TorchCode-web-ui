@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowRight, BookOpen, Check, ChevronDown, CircleCheck, Clock3, Code2, Flame, History, LayoutGrid, Leaf, Minus, Plus, RefreshCw, Search, Sparkles, Target, Trophy, Users, X, Zap } from 'lucide-react';
 import s from './practice.module.css';
 import SolutionDialog from './SolutionDialog';
+import AppearanceSettings from './AppearanceSettings';
 import JourneyMap from './JourneyMap';
 import ProblemHistory, { type HistoryProblem } from './ProblemHistory';
 import { currentJourneyWeeks, lessonState } from './journeyProgress';
@@ -233,7 +234,7 @@ export default function PracticePage() {
     </aside>
 
     <div className={s.viewport} id="practice-scroll">
-      <header className={s.topbar}><div><span className={s.headerKicker}>YOUR PERSONAL PRACTICE CLUB</span><span className={s.headerGreeting}>{data?.profile.name && data.profile.name !== 'You' ? `Hey, ${data.profile.name}.` : 'Hey, builder.'} <span aria-hidden="true">✌️</span></span></div><div className={s.topbarStats}><span className={s.streakPill}><Flame size={18} fill="currentColor" />{data?.stats.streak || 0}<span>day streak</span></span><span className={s.xpPill}><Zap size={17} fill="currentColor" />{data?.stats.xp || 0}<span>XP</span></span><button className={s.topAvatar} onClick={() => setShowProfiles(true)} aria-label="Switch learner profile">{(data?.profile.name || 'Y').slice(0, 1).toUpperCase()}</button></div></header>
+      <header className={s.topbar}><div><span className={s.headerKicker}>YOUR PERSONAL PRACTICE CLUB</span><span className={s.headerGreeting}>{data?.profile.name && data.profile.name !== 'You' ? `Hey, ${data.profile.name}.` : 'Hey, builder.'} <span aria-hidden="true">✌️</span></span></div><div className={s.topbarStats}><span className={s.streakPill}><Flame size={18} fill="currentColor" />{data?.stats.streak || 0}<span>day streak</span></span><span className={s.xpPill}><Zap size={17} fill="currentColor" />{data?.stats.xp || 0}<span>XP</span></span><AppearanceSettings user={ready ? user : null} name={data?.profile.name || 'You'} /><button className={s.topAvatar} onClick={() => setShowProfiles(true)} aria-label="Switch learner profile">{(data?.profile.name || 'Y').slice(0, 1).toUpperCase()}</button></div></header>
 
       <main className={s.main}>
         {error && <div className={s.errorBanner} role="alert"><span>{error}</span><button onClick={() => void refresh()}>Try again <RefreshCw size={15} /></button></div>}
