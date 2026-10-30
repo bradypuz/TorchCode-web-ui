@@ -32,7 +32,7 @@ def parse_notebook_template(filepath: str) -> dict:
                 
                 # Check for the implementation placeholder
                 if "# ✏️ YOUR IMPLEMENTATION HERE" in source_str:
-                    initial_code = "import torch\nimport torch.nn as nn\nimport torch.nn.functional as F\nimport math\n\n" + source_str
+                    initial_code = "import torch\nfrom torch import Tensor\nimport torch.nn as nn\nimport torch.nn.functional as F\nimport math\n\n" + source_str
                     
         return {
             "description": description,
