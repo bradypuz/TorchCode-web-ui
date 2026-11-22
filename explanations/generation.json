@@ -315,10 +315,15 @@
     {
       "solution_file": "solutions/36_int8_quantization_solution.ipynb",
       "explanation_file": "explanations/36_int8_quantization.md",
-      "solution_code_sha256": "57478e953b2725cacb660fe1d3d8ecbfa254998081ca34414cb5ea63e4f47177",
-      "prompt_sha256": "cd9fe0626d93f49a4d0baad3fadba784d97aa7c4eeea9e2fcd1fce03ff63f605",
-      "raw_response_sha256": "26441ceea281f2f45e16c1b292d5c0b3144b5fb1e251a46630ec7132a2564acb",
-      "explanation_sha256": "26441ceea281f2f45e16c1b292d5c0b3144b5fb1e251a46630ec7132a2564acb"
+      "solution_code_sha256": "0a41ed7173fa56fdef2989bf25e6c78be1fb38e43fd944a4fbe7c5e27e0f308a",
+      "prompt_sha256": "373d5d5e9575d8b68de41433423598be6eb7b6cf7090bd8dd044380c462b264f",
+      "raw_response_sha256": "8f29d2d28dbdae0f602716e5c7276893643d637b44af1cca0eba9cb1ed7a4d7d",
+      "explanation_sha256": "8f29d2d28dbdae0f602716e5c7276893643d637b44af1cca0eba9cb1ed7a4d7d",
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "xhigh",
+      "verbosity": "high",
+      "generated_at": "2026-11-22T22:35:19.188820+00:00",
+      "generation_context_sha256": "59e2f2be92f7fb76ce3fb8a8b78774505460ef83fba05649a0c5ea6d7df8343b"
     },
     {
       "solution_file": "solutions/37_dpo_loss_solution.ipynb",

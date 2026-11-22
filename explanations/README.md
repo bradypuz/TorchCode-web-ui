@@ -2,7 +2,7 @@
 
 These 41 guides explain the implementations checked into `solutions/`. The practice dashboard serves these files in its **Explanation** tab, beside the reference code. They are generated ahead of time; opening a guide does not generate new text or record a practice attempt.
 
-Each explanation is generated in a fresh GPT-6.1 Sol session with **extra-high reasoning effort (`xhigh`)**, using this exact user prompt:
+Each explanation is generated in a fresh GPT-6.1 Sol session by default, with **extra-high reasoning effort (`xhigh`)**, using this exact user prompt. When that model is unavailable, an individual file's record in [generation.json](generation.json) identifies the model actually used and its generation time.
 
 ````text
 ```
