@@ -27,7 +27,7 @@ Practice implementing operators and architectures from scratch — the exact ski
 [![GitHub stars](https://img.shields.io/github/stars/duoan/TorchCode?style=social)](https://github.com/duoan/TorchCode)
 [![GitHub Container Registry](https://img.shields.io/badge/ghcr.io-TorchCode-blue?style=flat-square&logo=github)](https://ghcr.io/duoan/torchcode)
 [![Hugging Face Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Spaces-TorchCode-blue?style=flat-square)](https://huggingface.co/spaces/duoan/TorchCode)
-![Problems](https://img.shields.io/badge/problems-41-orange?style=flat-square)
+![Problems](https://img.shields.io/badge/problems-42-orange?style=flat-square)
 ![GPU](https://img.shields.io/badge/GPU-not%20required-brightgreen?style=flat-square)
 
 [![Star History Chart](https://api.star-history.com/svg?repos=duoan/TorchCode&type=Date)](https://star-history.com/#duoan/TorchCode&Date)
@@ -44,7 +44,7 @@ TorchCode gives you a **structured practice environment** with:
 
 | | Feature | |
 |---|---|---|
-| 🧩 | **41 curated problems** | The most frequently asked PyTorch interview topics |
+| 🧩 | **42 curated problems** | The most frequently asked PyTorch interview topics |
 | ⚖️ | **Automated judge** | Correctness checks, gradient verification, and timing |
 | 🎨 | **Instant feedback** | Colored pass/fail per test case, just like competitive programming |
 | 💡 | **Hints when stuck** | Nudges without full spoilers |
@@ -133,7 +133,7 @@ You can also press **Ctrl+C** in the launch terminal. Ports 3000, 4000, and 8000
 
 Choose a local learner profile, adjust the daily problem count, and click **Practice It!** to open the selected problem in the coding workspace. Submitting code saves the attempt and test results; the dashboard uses these results to prioritize unfinished problems and schedule review of past problems. Each profile keeps its own goal and history, stored locally in SQLite under `data/` and retained across restarts.
 
-**Your Journey** turns the Suggested Study Plan below into four illustrated weekly paths, with all 41 problems in study order. Select a problem to see your progress and open its practice workspace or solution. Once a problem has a correct submission, it stays **Solved** and counts toward Journey completion, even if you choose **Needs more practice** or make mistakes in later attempts. The practice flag remains a separate reminder for future recommendations. Practice history groups repeated submissions under each problem; expand a row to see individual attempts and their test results.
+**Your Journey** turns the Suggested Study Plan below into four illustrated weekly paths, with all 42 problems in study order. Select a problem to see your progress and open its practice workspace or solution. Once a problem has a correct submission, it stays **Solved** and counts toward Journey completion, even if you choose **Needs more practice** or make mistakes in later attempts. The practice flag remains a separate reminder for future recommendations. Practice history groups repeated submissions under each problem; expand a row to see individual attempts and their test results.
 
 In **Your daily mission**, a problem stays **Done today** once you pass its tests that day, even if you choose **Needs more practice** or try again unsuccessfully. The flag helps schedule future practice without taking away earned completion. On a later day, a recommended review needs a fresh successful submission to count toward that day's mission.
 
@@ -141,7 +141,7 @@ Reviews on **Today’s practice** and **Review lab** are ranked by a priority sc
 
 The forgetting estimate uses `recall = 2^(-days_since_success / half_life)`, following the half-life curve described in [Duolingo’s spaced-repetition research](https://research.duolingo.com/papers/settles.acl16.pdf). Memory strength grows with spaced clean passes and decreases with recent mistakes. Failed submissions and flag clicks do not reset the last successful-practice timestamp. These weights and memory estimates are transparent heuristics, not a trained or calibrated measure of an individual’s recall; older imported completion markers without dated submissions do not receive an invented practice timestamp.
 
-The **Solution** button beside each practice button opens a guide with **Solution Code** and **Explanation** tabs. Use **Fullscreen** in the guide's header to fill the browser window; **Exit fullscreen** or **Esc** returns to the smaller view without losing your place. Code comes from the reference notebook; explanations for all 41 problems are pre-generated in [`explanations/`](explanations/README.md). Each guide walks through the actual code, shows intermediate values in worked examples and diagrams, and explains the reference's edge cases. Selected guides also include interactive examples for dropout, embedding, attention, masks, normalization, RoPE, sampling, and PPO. The code tab supports copying the implementation, including its imports, back into the editor.
+The **Solution** button beside each practice button opens a guide with **Solution Code** and **Explanation** tabs. Use **Fullscreen** in the guide's header to fill the browser window; **Exit fullscreen** or **Esc** returns to the smaller view without losing your place. Code comes from the reference notebook; explanations for all 42 problems are pre-generated in [`explanations/`](explanations/README.md). Each guide walks through the actual code, shows intermediate values in worked examples and diagrams, and explains the reference's edge cases. Selected guides also include interactive examples for dropout, embedding, attention, masks, normalization, RoPE, sampling, and PPO. The code tab supports copying the implementation, including its imports, back into the editor.
 
 In the coding workspace, **Submission history** shows the current learner's past attempts for the selected problem, including submission times and passed/total test counts. Click an attempt to load its exact code into the editor; **Undo load** restores the previous draft. New submissions save source code locally alongside test results. Older attempts retain their results but show **Code unavailable** because their source code was not recorded.
 
@@ -228,6 +228,7 @@ If you're interviewing for any role touching LLMs or Transformers, expect at lea
 | 35 | <a href="https://github.com/duoan/TorchCode/blob/master/templates/35_bpe.ipynb" target="_blank">BPE Tokenizer</a> <a href="https://colab.research.google.com/github/duoan/TorchCode/blob/master/templates/35_bpe.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" height="20"></a> | `SimpleBPE` | ![Hard](https://img.shields.io/badge/Hard-F44336?style=flat-square) | 💡 | Byte-pair encoding, merge rules, subword splits |
 | 36 | <a href="https://github.com/duoan/TorchCode/blob/master/templates/36_int8_quantization.ipynb" target="_blank">INT8 Quantization</a> <a href="https://colab.research.google.com/github/duoan/TorchCode/blob/master/templates/36_int8_quantization.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" height="20"></a> | `Int8Linear` (nn.Module) | ![Hard](https://img.shields.io/badge/Hard-F44336?style=flat-square) | 💡 | Per-channel quantize, scale/zero-point, buffer vs param |
 | 37 | <a href="https://github.com/duoan/TorchCode/blob/master/templates/37_dpo_loss.ipynb" target="_blank">DPO Loss</a> <a href="https://colab.research.google.com/github/duoan/TorchCode/blob/master/templates/37_dpo_loss.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" height="20"></a> | `dpo_loss(chosen, rejected, ...)` | ![Hard](https://img.shields.io/badge/Hard-F44336?style=flat-square) | 💡 | Direct preference optimization, alignment training |
+| 42 | <a href="https://github.com/bradypuz/TorchCode-web-ui/blob/master/templates/42_reinforce_loss.ipynb" target="_blank">REINFORCE Loss</a> <a href="https://colab.research.google.com/github/bradypuz/TorchCode-web-ui/blob/master/templates/42_reinforce_loss.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" height="20"></a> | `reinforce_loss(logits, actions, rewards)` | ![Medium](https://img.shields.io/badge/Medium-FF9800?style=flat-square) | 💡 | Policy gradient, reward-weighted log-probabilities, batch/action indexing |
 | 38 | <a href="https://github.com/duoan/TorchCode/blob/master/templates/38_grpo_loss.ipynb" target="_blank">GRPO Loss</a> <a href="https://colab.research.google.com/github/duoan/TorchCode/blob/master/templates/38_grpo_loss.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" height="20"></a> | `grpo_loss(logps, rewards, group_ids, eps)` | ![Hard](https://img.shields.io/badge/Hard-F44336?style=flat-square) | 💡 | Group relative policy optimization, RLAIF, within-group normalized advantages |
 | 39 | <a href="https://github.com/duoan/TorchCode/blob/master/templates/39_ppo_loss.ipynb" target="_blank">PPO Loss</a> <a href="https://colab.research.google.com/github/duoan/TorchCode/blob/master/templates/39_ppo_loss.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" height="20"></a> | `ppo_loss(new_logps, old_logps, advantages, clip_ratio)` | ![Hard](https://img.shields.io/badge/Hard-F44336?style=flat-square) | 💡 | PPO clipped surrogate loss, policy gradient, trust region |
 | 41 | <a href="https://github.com/duoan/TorchCode/blob/master/templates/41_opd_loss.ipynb" target="_blank">OPD Loss</a> <a href="https://colab.research.google.com/github/duoan/TorchCode/blob/master/templates/41_opd_loss.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" height="20"></a> | `opd_loss(student_logits, teacher_logits, ...)` | ![Hard](https://img.shields.io/badge/Hard-F44336?style=flat-square) | 💡 | On-policy distillation, reverse KL, multi-teacher alignment |
@@ -270,14 +271,14 @@ status()                    # Progress dashboard — solved / attempted / todo
 
 ## 📅 Suggested Study Plan
 
-> **All 41 problems: ~12–16 hours spread across 3–4 weeks. Perfect for interview prep on a deadline.**
+> **All 42 problems: ~12–16 hours spread across 3–4 weeks. Perfect for interview prep on a deadline.**
 
 | Week | Focus | Problems | Time |
 |:----:|-------|----------|:----:|
 | **1** | 🧱 Foundations | ReLU → Softmax → CE Loss → Dropout → Embedding → GELU → Linear → Linear Regression → LayerNorm → BatchNorm → RMSNorm → SwiGLU MLP → Conv2d | 2–3 hrs |
 | **2** | 🧠 Attention Deep Dive | SDPA → MHA → Cross-Attn → Causal → GQA → KV Cache → Sliding Window → RoPE → Linear Attn → Flash Attn | 3–4 hrs |
 | **3** | 🏗️ Architecture + Training | GPT-2 Block → LoRA → MoE → ViT Patch → Adam → Cosine LR → Grad Clip → Grad Accumulation → Kaiming Init | 3–4 hrs |
-| **4** | 🎯 Inference + Advanced | Top-k/p Sampling → Beam Search → Speculative Decoding → BPE → INT8 Quant → DPO Loss → GRPO Loss → PPO Loss → OPD Loss + speed run | 3–4 hrs |
+| **4** | 🎯 Inference + Advanced | Top-k/p Sampling → Beam Search → Speculative Decoding → BPE → INT8 Quant → DPO Loss → REINFORCE Loss → GRPO Loss → PPO Loss → OPD Loss + speed run | 3–4 hrs |
 
 ---
 

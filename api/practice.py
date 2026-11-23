@@ -43,7 +43,7 @@ STUDY_WEEKS = [
     ]},
     {"week": 4, "focus": "Inference + Advanced", "task_ids": [
         "topk_sampling", "beam_search", "speculative_decoding", "bpe",
-        "int8_quantization", "dpo_loss", "grpo_loss", "ppo_loss", "opd_loss",
+        "int8_quantization", "dpo_loss", "reinforce_loss", "grpo_loss", "ppo_loss", "opd_loss",
     ]},
 ]
 CURRICULUM = [task_id for week in STUDY_WEEKS for task_id in week["task_ids"]]
