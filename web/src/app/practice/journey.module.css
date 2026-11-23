@@ -58,6 +58,7 @@
 .journey .mapHeading p { color: var(--world-ink); font-size: 10px; line-height: 1.5; margin-top: 7px; }
 .journey .weekFraction { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; color: var(--world-ink); background: #ffffff80; border: 1px solid #ffffff80; padding: 12px 10px; border-radius: 14px; width: 61px; font-size: 21px; font-weight: 750; flex-shrink: 0; }
 .journey .weekFraction small { font-size: 12px; font-weight: 500; }
+.journey .weekFractionCount { display: inline-flex; align-items: baseline; white-space: nowrap; }
 .journey .weekFraction > svg { flex-basis: 100%; height: 12px; margin-top: 5px; opacity: .65; }
 .journey .mapLegend { display: flex; justify-content: center; flex-wrap: wrap; gap: 18px; margin: 18px 10px 2px; font-size: 8px; color: #637264; }
 .journey .mapLegend > span { display: flex; align-items: center; gap: 5px; }

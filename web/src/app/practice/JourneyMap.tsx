@@ -29,6 +29,13 @@ const WORLDS = [
   { name: 'The summit', caption: 'Make every prediction count', theme: s.summit },
 ];
 
+const SUMMIT_LESSON_NAMES: Record<string, string> = {
+  dpo_loss: 'DPO Loss',
+  grpo_loss: 'GRPO Loss',
+  ppo_loss: 'PPO Loss',
+  opd_loss: 'OPD Loss',
+};
+
 function WorldArt({ world, large = false }: { world: number; large?: boolean }) {
   return <svg className={large ? s.largeWorldArt : s.worldArt} viewBox="0 0 240 110" fill="none" aria-hidden="true">
     <path d="M27 26h26m-13-8h35M172 18h20m-7 8h28" stroke="currentColor" strokeWidth="4" strokeLinecap="round" opacity=".16" />
@@ -85,7 +92,7 @@ function trailPath(points: { x: number; y: number }[], width: number) {
       const middle = (previous.x + point.x) / 2;
       return `${path} C${middle} ${point.y - 28},${middle} ${point.y + 28},${point.x} ${point.y}`;
     }
-    const turn = point.x > width / 2 ? width - 2 : 2;
+    const turn = previous.x > width / 2 ? width - 2 : 2;
     return `${path} C${turn} ${previous.y},${turn} ${point.y},${point.x} ${point.y}`;
   }, '');
 }
@@ -199,7 +206,7 @@ function JourneyForUser({ weeks: studyWeeks, tasks, progress, history, user, onS
 
     {selectedWeek && selectedTask && <div className={`${s.expedition} ${world.theme}`}>
       <div className={s.mapBoard}>
-        <div className={s.mapHeading}><div><span>WEEK {String(selectedWeek.week).padStart(2, '0')} <span aria-hidden="true">/</span> {world.name}</span><h2>{selectedWeek.focus}</h2><p>{world.caption}.</p></div><span className={s.weekFraction} aria-label={`${selectedWeek.solved} of ${selectedWeek.total} problems solved`}>{selectedWeek.solved}<small>/{selectedWeek.total}</small>{selectedWeek.solved >= selectedWeek.total ? <Star size={14} fill="currentColor" /> : <Flag size={14} />}</span></div>
+        <div className={s.mapHeading}><div><span>WEEK {String(selectedWeek.week).padStart(2, '0')} <span aria-hidden="true">/</span> {world.name}</span><h2>{selectedWeek.focus}</h2><p>{world.caption}.</p></div><span className={s.weekFraction} aria-label={`${selectedWeek.solved} of ${selectedWeek.total} problems solved`}><span className={s.weekFractionCount}>{selectedWeek.solved}<small>/{selectedWeek.total}</small></span>{selectedWeek.solved >= selectedWeek.total ? <Star size={14} fill="currentColor" /> : <Flag size={14} />}</span></div>
         <div className={s.mapLegend} aria-label="Lesson status legend"><span><i className={s.legendSolved} />Solved</span><span><i className={s.legendReview} />Needs more practice</span><span><i className={s.legendNew} />Ready to explore</span></div>
         <div ref={pathAreaRef} className={s.pathArea}>
           <div className={s.mapDecorations} aria-hidden="true"><span className={s.flowerOne}>✦</span><span className={s.flowerTwo}>✦</span><svg className={s.tinyTree} viewBox="0 0 40 55"><path d="M20 36v15" stroke="var(--tree-trunk)" strokeWidth="5" strokeLinecap="round" /><path d="m4 36 16-26 16 26Z" fill="var(--tree)" /><path d="m8 23 12-21 12 21Z" fill="var(--tree-light)" /></svg></div>
@@ -212,11 +219,14 @@ function JourneyForUser({ weeks: studyWeeks, tasks, progress, history, user, onS
               const state = stateFor(id);
               const chosen = selectedId === id;
               const next = nextId === id;
-              const style = { '--desktop-col': desktopRow % 2 ? 3 - index % 3 : index % 3 + 1, '--desktop-row': desktopRow + 1, '--mobile-col': mobileRow % 2 ? 2 - index % 2 : index % 2 + 1, '--mobile-row': mobileRow + 1 } as CSSProperties;
+              const centeredFinish = selectedWeek.week === 4 && selectedWeek.task_ids.length % 3 === 1 && index === selectedWeek.task_ids.length - 1;
+              const desktopColumn = centeredFinish ? 2 : desktopRow % 2 ? 3 - index % 3 : index % 3 + 1;
+              const displayName = selectedWeek.week === 4 ? SUMMIT_LESSON_NAMES[id] || task?.title : task?.title;
+              const style = { '--desktop-col': desktopColumn, '--desktop-row': desktopRow + 1, '--mobile-col': mobileRow % 2 ? 2 - index % 2 : index % 2 + 1, '--mobile-row': mobileRow + 1 } as CSSProperties;
               return <li key={id} className={s.lesson} style={style}>
                 <button className={`${s.lessonButton} ${chosen ? s.chosenLesson : ''} ${isSolved(id) ? s.solvedLesson : needsReview(id) ? s.reviewLesson : ''}`} onClick={() => setSelection({ week: selectedWeek.week, id })} aria-current={chosen ? 'step' : undefined} aria-controls={detailId} aria-label={`Lesson ${index + 1}: ${task?.title || id}, ${state}${isSolved(id) && needsReview(id) ? ', Needs more practice reminder' : ''}${next ? ', recommended next lesson' : ''}${showCodeLines ? `, ${codeLineLabel(task?.implementation_lines, true)}` : ''}`}>
                   <span data-journey-node className={s.lessonMedallion}>{isSolved(id) ? <Check size={24} strokeWidth={3} /> : needsReview(id) ? <RefreshCw size={21} /> : <span>{index + 1}</span>}{isSolved(id) && <Star className={s.lessonStar} size={14} fill="currentColor" />}</span>
-                  <span className={s.lessonName}>{task?.title || id.replaceAll('_', ' ')}</span>
+                  <span className={s.lessonName} title={task?.title}>{displayName || id.replaceAll('_', ' ')}</span>
                   {next && state !== 'Needs more practice' ? <span className={s.nextLesson}><Sparkles size={9} /> UP NEXT</span> : <span className={s.lessonStatus}>{state === 'Not started' ? `LESSON ${String(index + 1).padStart(2, '0')}` : state}</span>}
                   {isSolved(id) && needsReview(id) && <span className={s.lessonReminder}><RefreshCw size={9} aria-hidden="true" />Needs more practice</span>}
                   {showCodeLines && <span className={s.codeLineBadge} data-implementation-lines={task?.implementation_lines ?? 'unavailable'}><Code2 size={11} aria-hidden="true" />{codeLineLabel(task?.implementation_lines)}</span>}
