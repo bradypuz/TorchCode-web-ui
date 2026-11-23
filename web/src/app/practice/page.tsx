@@ -204,7 +204,10 @@ export default function PracticePage() {
   const firstTask = data?.plan.find(item => !item.completed);
   const percent = data ? Math.min(100, Math.round(data.goal.completed / Math.max(1, data.goal.target) * 100)) : 0;
   const visibleHistory = (data?.problem_history || []).filter(item => (filter === 'all' || (filter === 'solved' ? isSolvedTask(item.task_id) : !isSolvedTask(item.task_id))) && item.title.toLowerCase().includes(query.toLowerCase()));
-  const visibleTasks = tasks.filter(item => (filter === 'all' || item.difficulty.toLowerCase() === filter) && item.title.toLowerCase().includes(query.toLowerCase()));
+  const studyOrder = new Map(studyWeeks.flatMap(week => week.task_ids).map((id, index) => [id, index]));
+  const visibleTasks = tasks
+    .filter(item => (filter === 'all' || item.difficulty.toLowerCase() === filter) && item.title.toLowerCase().includes(query.toLowerCase()))
+    .sort((left, right) => (studyOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (studyOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER));
   const nav = [{ id: 'today' as const, label: 'Today’s practice', icon: LayoutGrid }, { id: 'review' as const, label: 'Review lab', icon: RefreshCw }, { id: 'history' as const, label: 'Your journey', icon: History }, { id: 'library' as const, label: 'Problem library', icon: BookOpen }];
 
   function navigate(next: Section) { setSection(next); setQuery(''); setFilter('all'); document.getElementById('practice-scroll')?.scrollTo({ top: 0, behavior: 'smooth' }); }

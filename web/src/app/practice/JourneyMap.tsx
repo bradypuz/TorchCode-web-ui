@@ -32,6 +32,7 @@ const WORLDS = [
 const SUMMIT_LESSON_NAMES: Record<string, string> = {
   dpo_loss: 'DPO Loss',
   grpo_loss: 'GRPO Loss',
+  grpo_complete_loss: 'GRPO Loss - Complete',
   ppo_loss: 'PPO Loss',
   opd_loss: 'OPD Loss',
 };
@@ -220,9 +221,10 @@ function JourneyForUser({ weeks: studyWeeks, tasks, progress, history, user, onS
               const chosen = selectedId === id;
               const next = nextId === id;
               const centeredFinish = selectedWeek.week === 4 && selectedWeek.task_ids.length % 3 === 1 && index === selectedWeek.task_ids.length - 1;
+              const centeredMobileFinish = selectedWeek.week === 4 && selectedWeek.task_ids.length % 2 === 1 && index === selectedWeek.task_ids.length - 1;
               const desktopColumn = centeredFinish ? 2 : desktopRow % 2 ? 3 - index % 3 : index % 3 + 1;
               const displayName = selectedWeek.week === 4 ? SUMMIT_LESSON_NAMES[id] || task?.title : task?.title;
-              const style = { '--desktop-col': desktopColumn, '--desktop-row': desktopRow + 1, '--mobile-col': mobileRow % 2 ? 2 - index % 2 : index % 2 + 1, '--mobile-row': mobileRow + 1 } as CSSProperties;
+              const style = { '--desktop-col': desktopColumn, '--desktop-row': desktopRow + 1, '--mobile-col': centeredMobileFinish ? '1 / -1' : mobileRow % 2 ? 2 - index % 2 : index % 2 + 1, '--mobile-row': mobileRow + 1 } as CSSProperties;
               return <li key={id} className={s.lesson} style={style}>
                 <button className={`${s.lessonButton} ${chosen ? s.chosenLesson : ''} ${isSolved(id) ? s.solvedLesson : needsReview(id) ? s.reviewLesson : ''}`} onClick={() => setSelection({ week: selectedWeek.week, id })} aria-current={chosen ? 'step' : undefined} aria-controls={detailId} aria-label={`Lesson ${index + 1}: ${task?.title || id}, ${state}${isSolved(id) && needsReview(id) ? ', Needs more practice reminder' : ''}${next ? ', recommended next lesson' : ''}${showCodeLines ? `, ${codeLineLabel(task?.implementation_lines, true)}` : ''}`}>
                   <span data-journey-node className={s.lessonMedallion}>{isSolved(id) ? <Check size={24} strokeWidth={3} /> : needsReview(id) ? <RefreshCw size={21} /> : <span>{index + 1}</span>}{isSolved(id) && <Star className={s.lessonStar} size={14} fill="currentColor" />}</span>

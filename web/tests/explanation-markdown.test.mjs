@@ -113,7 +113,7 @@ test('keeps GFM tables and Mermaid source usable beside math', () => {
 test('renders every saved explanation without a TeX parse error', () => {
   const directory = new URL('../../explanations/', import.meta.url);
   const files = readdirSync(directory).filter(file => /^\d+_.*\.md$/.test(file));
-  assert.equal(files.length, 42);
+  assert.equal(files.length, 43);
   for (const file of files) {
     const html = render(readFileSync(new URL(file, directory), 'utf8'));
     assert.ok(!html.includes('katex-error'), `${file} contains math that failed to render`);

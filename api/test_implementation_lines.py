@@ -24,7 +24,7 @@ EXPECTED_COUNTS = {
     "gradient_accumulation": 9, "topk_sampling": 13, "beam_search": 19,
     "speculative_decoding": 17, "bpe": 40, "int8_quantization": 10,
     "dpo_loss": 3, "grpo_loss": 10, "ppo_loss": 6, "linear_regression": 30,
-    "opd_loss": 31, "reinforce_loss": 4,
+    "opd_loss": 31, "reinforce_loss": 4, "grpo_complete_loss": 20,
 }
 
 

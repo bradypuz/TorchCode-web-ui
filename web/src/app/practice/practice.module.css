@@ -131,7 +131,7 @@
 .historyActions .problemActions { gap: 5px; }
 .historyActions .solutionButton { padding: 6px 8px; font-size: 9px !important; }
 .historyActions .solutionButton svg { width: 12px; height: 12px; }
-.libraryCard .problemActions { width: 100%; }
+.libraryCard .problemActions { width: 100%; margin-top: auto; }
 .libraryCard .practiceButton { flex: 1; width: auto; }
 .reviewCard .solutionButton { background: #f5f1fb; border-color: #e8e0f2 !important; color: #746084; }
 .planNote { display: flex; align-items: center; gap: 5px; font-size: 9px; color: #a4ac99; line-height: 1.5; margin: 14px 0 0 !important; }
@@ -227,7 +227,7 @@
 .reviewExplainer h3 { font-size: 13px; color: #748954; font-weight: 650; }
 .reviewExplainer p { font-size: 11px; line-height: 1.8; margin-top: 4px; color: #9aa78c; }
 .libraryGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 17px; }
-.libraryCard { border: 1px solid #e0e7d6; border-bottom-width: 3px; background: #fff; border-radius: 17px; padding: 20px; }
+.libraryCard { display: flex; flex-direction: column; min-width: 0; border: 1px solid #e0e7d6; border-bottom-width: 3px; background: #fff; border-radius: 17px; padding: 20px; }
 .libraryCard:hover { transform: translateY(-3px); box-shadow: 0 6px 20px #2c491309; }
 .libraryCardTop { display: flex; align-items: center; justify-content: space-between; }
 .libraryStatuses { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }

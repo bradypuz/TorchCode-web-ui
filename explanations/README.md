@@ -1,6 +1,6 @@
 # Reference solution explanations
 
-These 42 guides explain the implementations checked into `solutions/`. The practice dashboard serves these files in its **Explanation** tab, beside the reference code. They are generated ahead of time; opening a guide does not generate new text or record a practice attempt.
+These 43 guides explain the implementations checked into `solutions/`. The practice dashboard serves these files in its **Explanation** tab, beside the reference code. They are generated ahead of time; opening a guide does not generate new text or record a practice attempt.
 
 Each explanation is generated in a fresh GPT-6.1 Sol session by default, with **extra-high reasoning effort (`xhigh`)**, using this exact user prompt. When that model is unavailable, an individual file's record in [generation.json](generation.json) identifies the model actually used and its generation time.
 
@@ -79,6 +79,7 @@ Use a fresh run directory for a new generation. `--tasks dropout` can produce a 
 | 37 | DPO (Direct Preference Optimization) Loss | [37_dpo_loss.md](37_dpo_loss.md) | [37_dpo_loss_solution.ipynb](../solutions/37_dpo_loss_solution.ipynb) |
 | 42 | REINFORCE Loss | [42_reinforce_loss.md](42_reinforce_loss.md) | [42_reinforce_loss_solution.ipynb](../solutions/42_reinforce_loss_solution.ipynb) |
 | 38 | GRPO (Group Relative Policy Optimization) Loss | [38_grpo_loss.md](38_grpo_loss.md) | [38_grpo_loss_solution.ipynb](../solutions/38_grpo_loss_solution.ipynb) |
+| 43 | GRPO Loss - Complete | [43_grpo_complete_loss.md](43_grpo_complete_loss.md) | [43_grpo_complete_loss_solution.ipynb](../solutions/43_grpo_complete_loss_solution.ipynb) |
 | 39 | PPO (Proximal Policy Optimization) Clipped Loss | [39_ppo_loss.md](39_ppo_loss.md) | [39_ppo_loss_solution.ipynb](../solutions/39_ppo_loss_solution.ipynb) |
 | 40 | Linear Regression | [40_linear_regression.md](40_linear_regression.md) | [40_linear_regression_solution.ipynb](../solutions/40_linear_regression_solution.ipynb) |
 | 41 | OPD (On-Policy Distillation) Loss | [41_opd_loss.md](41_opd_loss.md) | [41_opd_loss_solution.ipynb](../solutions/41_opd_loss_solution.ipynb) |

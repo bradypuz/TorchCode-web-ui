@@ -81,14 +81,14 @@ class PracticeStoreTests(unittest.TestCase):
         self.assertIn("Week 3", plan[2]["reason"])
         self.assertEqual(STUDY_WEEKS[3]["task_ids"], CURRICULUM[32:])
 
-    def test_curriculum_has_all_42_real_tasks_once_across_four_weeks(self):
+    def test_curriculum_has_all_43_real_tasks_once_across_four_weeks(self):
         flattened = [task_id for week in STUDY_WEEKS for task_id in week["task_ids"]]
         self.assertEqual(CURRICULUM, flattened)
-        self.assertEqual(len(CURRICULUM), 42)
+        self.assertEqual(len(CURRICULUM), 43)
         self.assertEqual(len(CURRICULUM), len(set(CURRICULUM)))
         self.assertEqual(set(CURRICULUM), set(TASKS))
         self.assertEqual([week["week"] for week in STUDY_WEEKS], [1, 2, 3, 4])
-        self.assertEqual([week["total"] for week in self.dashboard()["curriculum"]], [13, 10, 9, 10])
+        self.assertEqual([week["total"] for week in self.dashboard()["curriculum"]], [13, 10, 9, 11])
         self.assertTrue(all(entry["study_week"] in (1, 2, 3, 4)
                             for entry in self.dashboard()["progress"]))
 
@@ -109,6 +109,7 @@ class PracticeStoreTests(unittest.TestCase):
             "Speculative Decoding": "speculative_decoding", "BPE": "bpe",
             "INT8 Quant": "int8_quantization", "DPO Loss": "dpo_loss",
             "REINFORCE Loss": "reinforce_loss", "GRPO Loss": "grpo_loss",
+            "GRPO Loss - Complete": "grpo_complete_loss",
             "PPO Loss": "ppo_loss", "OPD Loss": "opd_loss",
         }
         readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
@@ -127,9 +128,19 @@ class PracticeStoreTests(unittest.TestCase):
         reinforce_index = CURRICULUM.index("reinforce_loss")
         self.store.import_solved("local", CURRICULUM[:reinforce_index])
         plan = self.store.dashboard(day="2000-01-01")["plan"]
-        self.assertEqual([entry["id"] for entry in plan], ["reinforce_loss", "grpo_loss", "ppo_loss"])
+        self.assertEqual([entry["id"] for entry in plan], ["reinforce_loss", "grpo_loss", "grpo_complete_loss"])
         self.assertEqual(plan[0]["study_week"], 4)
         self.assertEqual(plan[0]["study_focus"], "Inference + Advanced")
+        self.assertEqual(plan[0]["topic"], "Alignment")
+
+    def test_complete_grpo_follows_grpo_in_the_journey_and_recommendations(self):
+        grpo_index = CURRICULUM.index("grpo_loss")
+        self.assertEqual(CURRICULUM[grpo_index:grpo_index + 3],
+                         ["grpo_loss", "grpo_complete_loss", "ppo_loss"])
+        self.store.import_solved("local", CURRICULUM[:grpo_index + 1])
+        plan = self.store.dashboard(day="2000-01-01")["plan"]
+        self.assertEqual([entry["id"] for entry in plan], ["grpo_complete_loss", "ppo_loss", "opd_loss"])
+        self.assertEqual(plan[0]["study_week"], 4)
         self.assertEqual(plan[0]["topic"], "Alignment")
 
     def test_linear_regression_is_recommended_immediately_after_linear(self):
