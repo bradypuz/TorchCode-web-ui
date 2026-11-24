@@ -214,7 +214,7 @@ class ReviewRankingTests(unittest.TestCase):
 
     def test_clean_pass_clears_manual_flag_and_reschedules_with_lower_priority(self):
         self.store.record_attempt("local", "relu", FAIL, at=NOW - timedelta(days=1))
-        self.store.mark_review("local", "relu", True)
+        self.store.mark_review("local", "relu", True, at=NOW - timedelta(days=1))
         before = self.review("relu")["review_score"]
         self.store.record_attempt("local", "relu", PASS, at=NOW)
         self.assertFalse(self.state("relu")["manual_review"])
@@ -223,6 +223,45 @@ class ReviewRankingTests(unittest.TestCase):
         after = self.review("relu", now=NOW + timedelta(days=2))
         self.assertLess(after["review_score"], before)
         self.assertFalse(after["review_factors"]["manual"])
+
+    def test_clean_pass_on_the_flag_day_keeps_the_flag_for_a_later_review(self):
+        self.store.record_attempt("local", "relu", PASS, at=NOW - timedelta(days=3))
+        self.store.mark_review("local", "relu", True, at=NOW)
+        self.store.record_attempt("local", "relu", PASS, at=NOW + timedelta(hours=1))
+        state = self.state("relu")
+        self.assertTrue(state["manual_review"])
+        self.assertTrue(state["needs_review"])
+        self.assertEqual(state["manual_review_at"], NOW.isoformat())
+        tomorrow = self.review("relu", now=NOW + timedelta(days=1))
+        self.assertTrue(tomorrow["manual_review"])
+        self.assertFalse(tomorrow["completed"])
+        self.store.record_attempt("local", "relu", PASS, at=NOW + timedelta(days=1))
+        state = self.state("relu")
+        self.assertFalse(state["manual_review"])
+        self.assertFalse(state["needs_review"])
+        self.assertIsNone(state["manual_review_at"])
+
+    def test_flag_day_uses_the_learners_timezone(self):
+        flagged = datetime(2026, 10, 10, 23, 30, tzinfo=timezone.utc)  # 16:30 PDT
+        passed = flagged + timedelta(hours=1)  # 17:30 PDT, but the next UTC day
+        for task_id, zone, kept in (("relu", "America/Los_Angeles", True), ("softmax", "UTC", False)):
+            with self.subTest(zone=zone):
+                self.store.mark_review("local", task_id, True, at=flagged)
+                self.store.record_attempt("local", task_id, PASS, at=passed, timezone=zone)
+                self.assertEqual(bool(self.state(task_id)["manual_review"]), kept)
+
+    def test_undated_older_flag_still_clears_on_any_clean_pass(self):
+        self.store.record_attempt("local", "relu", PASS, at=NOW - timedelta(days=3))
+        with self.store.connection() as connection:
+            connection.execute("UPDATE progress SET manual_review = 1, needs_review = 1 WHERE task_id = 'relu'")
+        self.store.record_attempt("local", "relu", PASS, at=NOW)
+        self.assertFalse(self.state("relu")["manual_review"])
+
+    def test_flag_timestamp_follows_the_learners_choice(self):
+        self.store.mark_review("local", "relu", True, at=NOW)
+        self.assertEqual(self.state("relu")["manual_review_at"], NOW.isoformat())
+        self.store.mark_review("local", "relu", False)
+        self.assertIsNone(self.state("relu")["manual_review_at"])
 
     def test_unmark_does_not_clear_mistakes_or_reset_timestamps(self):
         self.store.record_attempt("local", "relu", PASS, at=NOW - timedelta(days=4))
@@ -286,6 +325,7 @@ class ReviewRankingTests(unittest.TestCase):
         self.store = PracticeStore(self.store.path, self.path / "absent.json")
         state = self.state("relu")
         self.assertTrue(state["manual_review"])
+        self.assertIsNone(state["manual_review_at"])
         self.assertEqual(state["review_anchor_at"], NOW.isoformat())
         self.assertEqual(state["review_due_days"], 2)
         self.store.mark_review("local", "relu", False)

@@ -8,7 +8,7 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
-import { Play, RotateCcw, ChevronDown, Check, X, AlertCircle, Sparkles, ArrowUpRight, History } from 'lucide-react';
+import { Play, RotateCcw, RefreshCw, ChevronDown, Check, X, AlertCircle, Sparkles, ArrowUpRight, History } from 'lucide-react';
 import SubmissionHistory, { type HistoricalSubmission } from './SubmissionHistory';
 import { Allotment } from "allotment";
 import "allotment/dist/style.css";
@@ -56,8 +56,12 @@ type SubmissionResponse = {
 
 type PracticeDashboard = {
   profile: { id: string; name: string };
-  progress: { id: string; status: 'unseen' | 'attempted' | 'solved'; needs_review: boolean }[];
+  progress: { id: string; status: 'unseen' | 'attempted' | 'solved'; needs_review: boolean; manual_review: boolean }[];
 };
+
+// `flagged` is the learner's own "Need more practice" choice; `scheduled` also
+// covers reviews recommended after hints, retries, or failed tests.
+type ReviewFlag = { flagged: boolean; scheduled: boolean };
 
 function readSavedValue(key: string) {
   try {
@@ -80,6 +84,10 @@ function draftKey(userId: string, taskId: string) {
   return `torchcode_code_${userId}:${taskId}`;
 }
 
+function localTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
 function practiceQuery(userId: string) {
   const today = new Date();
   const day = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
@@ -87,7 +95,7 @@ function practiceQuery(userId: string) {
     user_id: userId,
     count: '3',
     day,
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timezone: localTimezone(),
   });
 }
 
@@ -99,6 +107,10 @@ async function getPracticeProgress(userId: string, signal: AbortSignal) {
 
 function solvedFromProgress(progress: PracticeDashboard['progress']) {
   return Object.fromEntries(progress.filter(task => task.status === 'solved').map(task => [task.id, true]));
+}
+
+function reviewFlagsFromProgress(progress: PracticeDashboard['progress']): Record<string, ReviewFlag> {
+  return Object.fromEntries(progress.map(task => [task.id, { flagged: task.manual_review, scheduled: task.needs_review }]));
 }
 
 export default function Home() {
@@ -122,12 +134,16 @@ export default function Home() {
   const [profileName, setProfileName] = useState('You');
   const [hintUsed, setHintUsed] = useState(false);
   const [hintResetCounter, setHintResetCounter] = useState(0);
-  const [reviewState, setReviewState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  // Unknown until practice progress loads, so the toggle never shows a guess.
+  const [reviewFlags, setReviewFlags] = useState<Record<string, ReviewFlag> | null>(null);
+  const [flagRequest, setFlagRequest] = useState<{ taskId: string; status: 'saving' | 'error' } | null>(null);
   const [taskError, setTaskError] = useState<string | null>(null);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const submissionControllerRef = useRef<AbortController | null>(null);
-  const reviewControllerRef = useRef<AbortController | null>(null);
+  // Bumped when a flag save starts and ends, so a progress refresh that
+  // overlapped a save cannot overwrite the newer saved flag.
+  const flagSaveVersionRef = useRef(0);
 
   const handleEditorMount: OnMount = (editorInstance) => {
     editorRef.current = editorInstance;
@@ -191,6 +207,7 @@ export default function Home() {
         if (controller.signal.aborted) return;
         setProfileName(dashboard.profile.name);
         setSolvedTasks(solvedFromProgress(dashboard.progress));
+        setReviewFlags(reviewFlagsFromProgress(dashboard.progress));
       } catch (error) {
         if (controller.signal.aborted) return;
         console.error('Failed to initialize practice editor', error);
@@ -221,7 +238,6 @@ export default function Home() {
         setPreviousDraft(null);
         setActiveTab('problem');
         setHintUsed(false);
-        setReviewState('idle');
         setTaskError(null);
         setIsSubmitting(false);
       })
@@ -233,7 +249,6 @@ export default function Home() {
     return () => {
       controller.abort();
       submissionControllerRef.current?.abort();
-      reviewControllerRef.current?.abort();
     };
   }, [selectedTaskId, userId]);
 
@@ -243,7 +258,6 @@ export default function Home() {
       return;
     }
     submissionControllerRef.current?.abort();
-    reviewControllerRef.current?.abort();
     setSelectedTaskId(taskId);
     setTaskDetails(null);
     setTaskError(null);
@@ -252,7 +266,7 @@ export default function Home() {
     setPreviousDraft(null);
     setHintUsed(false);
     setIsSubmitting(false);
-    setReviewState('idle');
+    setFlagRequest(request => request?.status === 'error' ? null : request);
     setActiveTab('problem');
     setIsDropdownOpen(false);
     const url = new URL(window.location.href);
@@ -269,14 +283,13 @@ export default function Home() {
     
     setIsSubmitting(true);
     setResults(null);
-    setReviewState('idle');
     setActiveTab('results'); // Auto-switch to results tab
     
     try {
       const res = await fetch(`${API_BASE}/submit/${selectedTaskId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, user_id: userId, hint_used: hintUsed }),
+        body: JSON.stringify({ code, user_id: userId, hint_used: hintUsed, timezone: localTimezone() }),
         signal: controller.signal,
       });
       if (!res.ok) throw new Error('The backend could not run this submission');
@@ -295,10 +308,11 @@ export default function Home() {
       // A successful run can still benefit from review after hints or retries.
       // Fetch the backend's assessment without delaying the test result.
       try {
+        const flagSaveVersion = flagSaveVersionRef.current;
         const dashboard = await getPracticeProgress(userId, controller.signal);
         if (controller.signal.aborted) return;
         setSolvedTasks(solvedFromProgress(dashboard.progress));
-        if (dashboard.progress.find(task => task.id === selectedTaskId)?.needs_review) setReviewState('saved');
+        if (flagSaveVersionRef.current === flagSaveVersion) setReviewFlags(reviewFlagsFromProgress(dashboard.progress));
       } catch (error) {
         if (!controller.signal.aborted) console.error('Failed to refresh practice history', error);
       }
@@ -320,25 +334,30 @@ export default function Home() {
     }
   };
 
-  const handleRequestReview = async () => {
-    if (!selectedTaskId || !userId) return;
-    const controller = new AbortController();
-    reviewControllerRef.current?.abort();
-    reviewControllerRef.current = controller;
-    setReviewState('saving');
+  // The flag is shared with the practice dashboard and adds review priority
+  // until a clean pass on a later day.
+  const handleTogglePractice = async () => {
+    if (!selectedTaskId || !userId || !reviewFlags || flagRequest?.status === 'saving') return;
+    const taskId = selectedTaskId;
+    const flagged = !reviewFlags[taskId]?.flagged;
+    flagSaveVersionRef.current++;
+    setFlagRequest({ taskId, status: 'saving' });
     try {
+      // Not aborted on problem switches: the server may already have saved it.
       const response = await fetch(`${API_BASE}/practice/review`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: userId, task_id: selectedTaskId, needs_review: true }),
-        signal: controller.signal,
+        body: JSON.stringify({ user_id: userId, task_id: taskId, needs_review: flagged }),
       });
       if (!response.ok) throw new Error('Could not save review request');
-      if (!controller.signal.aborted) setReviewState('saved');
+      const saved: { manual_review: boolean; needs_review: boolean } = await response.json();
+      setReviewFlags(previous => ({ ...previous, [taskId]: { flagged: saved.manual_review, scheduled: saved.needs_review } }));
+      setFlagRequest(null);
     } catch (error) {
-      if (controller.signal.aborted) return;
       console.error('Failed to save review request', error);
-      setReviewState('error');
+      setFlagRequest({ taskId, status: 'error' });
+    } finally {
+      flagSaveVersionRef.current++;
     }
   };
 
@@ -352,7 +371,6 @@ export default function Home() {
       setPreviousDraft(null);
       setHintUsed(false);
       setHintResetCounter(previous => previous + 1);
-      setReviewState('idle');
     }
   };
 
@@ -364,7 +382,6 @@ export default function Home() {
     setLoadedSubmission(submission);
     setResults(null);
     setHintUsed(hintUsed || submission.hint_used);
-    setReviewState('idle');
     editorRef.current?.setPosition({ lineNumber: 1, column: 1 });
     editorRef.current?.setScrollTop(0);
     editorRef.current?.focus();
@@ -380,6 +397,28 @@ export default function Home() {
     setPreviousDraft(null);
     editorRef.current?.focus();
   };
+
+  const currentFlag = selectedTaskId ? reviewFlags?.[selectedTaskId] : undefined;
+  const isSavingFlag = flagRequest?.status === 'saving';
+  const flagSaveFailed = flagRequest?.status === 'error' && flagRequest.taskId === selectedTaskId;
+  const practiceToggle = (
+    <button
+      type="button"
+      onClick={handleTogglePractice}
+      disabled={!reviewFlags || !taskDetails || taskDetails.id !== selectedTaskId || isSavingFlag}
+      aria-pressed={currentFlag?.flagged ?? false}
+      aria-busy={isSavingFlag}
+      title={currentFlag?.flagged
+        ? 'Marked for a future review. Click to remove the flag.'
+        : 'Bring this problem back in a future review, with extra priority.'}
+      className={`flex flex-shrink-0 items-center gap-2 whitespace-nowrap rounded-md border px-3 py-2 text-sm font-medium transition-colors ${isSavingFlag ? 'cursor-progress' : 'disabled:opacity-50'} ${currentFlag?.flagged
+        ? 'border-emerald-500/30 bg-emerald-500/10 text-[var(--workspace-emerald)] hover:bg-emerald-500/20'
+        : 'border-[var(--workspace-border-strong)] bg-[var(--workspace-control)] text-[var(--workspace-text)] hover:bg-[var(--workspace-border)]'}`}
+    >
+      {currentFlag?.flagged ? <Check className="h-4 w-4" strokeWidth={3} /> : <RefreshCw className="h-4 w-4" />}
+      Need more practice
+    </button>
+  );
 
   return (
     <div className={`${s.workspace} flex flex-col h-screen bg-[var(--workspace-bg)] text-[var(--workspace-ink)] font-sans`} data-code-theme={theme}>
@@ -443,8 +482,10 @@ export default function Home() {
               </>
             )}
           </div>
+          {practiceToggle}
+          {flagSaveFailed && <span className="text-xs text-[var(--workspace-danger)]" role="alert">Could not save. Try again.</span>}
         </div>
-        
+
         <div className="flex items-center space-x-3">
           <a
             href={practiceReturnTo}
@@ -603,16 +644,12 @@ export default function Home() {
 
                     {results.success && (
                       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 text-sm">
-                        <span className="mr-auto text-[var(--workspace-subtle)]">Nice work. How confident do you feel?</span>
-                        <button
-                          onClick={handleRequestReview}
-                          disabled={reviewState === 'saving' || reviewState === 'saved'}
-                          className="flex items-center gap-2 rounded-md border border-[var(--workspace-border-strong)] bg-[var(--workspace-control)] px-3 py-2 text-[var(--workspace-text)] transition-colors hover:bg-[var(--workspace-border)] disabled:cursor-default disabled:border-emerald-500/25 disabled:bg-emerald-500/10 disabled:text-[var(--workspace-emerald)]"
-                        >
-                          {reviewState === 'saved' ? <Check className="h-4 w-4" /> : <RotateCcw className="h-4 w-4" />}
-                          {reviewState === 'saved' ? 'Added to review' : reviewState === 'saving' ? 'Saving...' : 'Need more practice'}
-                        </button>
-                        {reviewState === 'error' && <span className="w-full text-xs text-[var(--workspace-danger)]" role="alert">Could not save. Try again.</span>}
+                        <span className="mr-auto text-[var(--workspace-subtle)]">
+                          {currentFlag?.flagged ? 'Marked for more practice. It will come back in a future review.'
+                            : currentFlag?.scheduled ? 'Nice work. This one is already scheduled for a review.'
+                            : 'Nice work. How confident do you feel?'}
+                        </span>
+                        {practiceToggle}
                       </div>
                     )}
 

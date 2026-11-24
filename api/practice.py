@@ -62,8 +62,18 @@ def study_for(task_id: str) -> dict[str, Any]:
     return {"study_week": None, "study_focus": "Extra Practice"}
 
 
+DEFAULT_TIMEZONE = "America/Los_Angeles"
+
+
 def utc_now() -> datetime:
     return datetime.now(dt_timezone.utc)
+
+
+def learner_zone(timezone: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise HTTPException(status_code=422, detail="Unknown timezone")
 
 
 def timestamp(value: datetime) -> str:
@@ -121,7 +131,7 @@ class PracticeStore:
                     solved INTEGER NOT NULL DEFAULT 0, needs_review INTEGER NOT NULL DEFAULT 0,
                     clean_passes INTEGER NOT NULL DEFAULT 0, review_due_at TEXT,
                     review_anchor_at TEXT, review_due_days INTEGER, review_reason TEXT,
-                    manual_review INTEGER NOT NULL DEFAULT 0,
+                    manual_review INTEGER NOT NULL DEFAULT 0, manual_review_at TEXT,
                     imported_attempts INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (user_id, task_id)
                 );
@@ -140,8 +150,9 @@ class PracticeStore:
                 connection.execute("ALTER TABLE attempts ADD COLUMN submitted_code TEXT")
             # Preserve existing local databases when review scheduling improves.
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(progress)")}
+            # NULL manual_review_at marks an older flag, which any clean pass clears.
             for column, kind in (("review_anchor_at", "TEXT"), ("review_due_days", "INTEGER"),
-                                 ("review_reason", "TEXT")):
+                                 ("review_reason", "TEXT"), ("manual_review_at", "TEXT")):
                 if column not in columns:
                     connection.execute(f"ALTER TABLE progress ADD COLUMN {column} {kind}")
             if "manual_review" not in columns:
@@ -287,10 +298,11 @@ class PracticeStore:
 
     def record_attempt(self, user_id: str, task_id: str, result: dict[str, Any],
                        hint_used: bool = False, at: datetime | None = None,
-                       *, code: str | None = None) -> None:
+                       *, code: str | None = None, timezone: str = DEFAULT_TIMEZONE) -> None:
         self.profile(user_id)
         if task_id not in TASKS:
             raise HTTPException(status_code=404, detail="Task not found")
+        zone = learner_zone(timezone)
         at = at or utc_now()
         if at.tzinfo is None:
             at = at.replace(tzinfo=dt_timezone.utc)
@@ -332,13 +344,20 @@ class PracticeStore:
                 delay = 0
             due = at + timedelta(days=delay)
             reason = "failed" if not success else "hint" if hint_used else "retries" if struggled else "spaced"
-            manual_review = bool(old["manual_review"]) and not clean
+            # "Needs more practice" asks for another try on a later day, so a
+            # clean pass on the learner's flag day keeps the flag.
+            flagged_at = old["manual_review_at"]
+            later_day = flagged_at is None or (
+                at.astimezone(zone).date() > parse_timestamp(flagged_at).astimezone(zone).date())
+            manual_review = bool(old["manual_review"]) and not (clean and later_day)
             connection.execute("""
                 UPDATE progress SET solved = ?, needs_review = ?, clean_passes = ?, review_due_at = ?,
-                                    review_anchor_at = ?, review_due_days = ?, review_reason = ?, manual_review = ?
+                                    review_anchor_at = ?, review_due_days = ?, review_reason = ?, manual_review = ?,
+                                    manual_review_at = ?
                 WHERE user_id = ? AND task_id = ?
             """, (int(old["solved"] or success), int(manual_review or not success or hint_used or struggled),
-                  clean_passes, timestamp(due), timestamp(at), delay, reason, int(manual_review), user_id, task_id))
+                  clean_passes, timestamp(due), timestamp(at), delay, reason, int(manual_review),
+                  flagged_at if manual_review else None, user_id, task_id))
 
     def _validate_submission_scope(self, user_id: str, task_id: str) -> None:
         self.profile(user_id)
@@ -392,10 +411,12 @@ class PracticeStore:
             raise HTTPException(status_code=404, detail="Submission not found")
         return {**self._submission_metadata(row), "code": row["submitted_code"]}
 
-    def mark_review(self, user_id: str, task_id: str, needs_review: bool) -> dict[str, bool]:
+    def mark_review(self, user_id: str, task_id: str, needs_review: bool,
+                    *, at: datetime | None = None) -> dict[str, bool]:
         self.profile(user_id)
         if task_id not in TASKS:
             raise HTTPException(status_code=404, detail="Task not found")
+        flagged_at = timestamp(at or utc_now()) if needs_review else None
         with self.connection() as connection:
             connection.execute("INSERT OR IGNORE INTO progress (user_id, task_id) VALUES (?, ?)",
                                (user_id, task_id))
@@ -409,21 +430,18 @@ class PracticeStore:
                 connection.execute("UPDATE progress SET review_reason = 'legacy' WHERE user_id = ? AND task_id = ?",
                                    (user_id, task_id))
             connection.execute("""
-                UPDATE progress SET manual_review = ?, needs_review = ?
+                UPDATE progress SET manual_review = ?, manual_review_at = ?, needs_review = ?
                 WHERE user_id = ? AND task_id = ?
-            """, (int(needs_review), int(needs_review or automatic), user_id, task_id))
+            """, (int(needs_review), flagged_at, int(needs_review or automatic), user_id, task_id))
         return {"ok": True, "manual_review": needs_review, "needs_review": bool(needs_review or automatic)}
 
     def dashboard(self, user_id: str = "local", count: int = 3,
-                  day: str | None = None, timezone: str = "America/Los_Angeles",
+                  day: str | None = None, timezone: str = DEFAULT_TIMEZONE,
                   now: datetime | None = None) -> dict[str, Any]:
         profile = self.profile(user_id)
         if not 1 <= count <= 10:
             raise HTTPException(status_code=422, detail="Choose between 1 and 10 problems")
-        try:
-            zone = ZoneInfo(timezone)
-        except (ZoneInfoNotFoundError, ValueError):
-            raise HTTPException(status_code=422, detail="Unknown timezone")
+        zone = learner_zone(timezone)
         clock = now or utc_now()
         if clock.tzinfo is None:
             clock = clock.replace(tzinfo=dt_timezone.utc)
@@ -688,7 +706,7 @@ def set_appearance(request: AppearanceRequest):
 
 @router.get("/dashboard")
 def dashboard(user_id: str = "local", count: int = Query(default=3, ge=1, le=10),
-              day: str | None = None, timezone: str = "America/Los_Angeles"):
+              day: str | None = None, timezone: str = DEFAULT_TIMEZONE):
     return get_store().dashboard(user_id=user_id, count=count, day=day, timezone=timezone)
 
 

@@ -239,7 +239,8 @@ class SubmissionHistoryTests(unittest.TestCase):
         for source, result in (("", FAILURE), ("\n  # π\r\nreturn x\n", SUCCESS)):
             with self.subTest(source=source):
                 store_spy = Mock(wraps=self.store)
-                request = main.SubmitRequest(code=source, user_id=learner["id"], hint_used=True)
+                request = main.SubmitRequest(code=source, user_id=learner["id"], hint_used=True,
+                                             timezone="Europe/Paris")
                 with patch.object(main, "get_store", return_value=store_spy), \
                         patch.object(main, "execute_code", return_value=result) as execute:
                     response = main.submit_code("relu", request)
@@ -247,7 +248,8 @@ class SubmissionHistoryTests(unittest.TestCase):
                 execute.assert_called_once_with("relu", source)
                 store_spy.profile.assert_called_once_with(learner["id"])
                 store_spy.record_attempt.assert_called_once_with(
-                    learner["id"], "relu", result, hint_used=True, code=source)
+                    learner["id"], "relu", result, hint_used=True, code=source,
+                    timezone="Europe/Paris")
                 row = self.store.submissions(learner["id"], "relu")["submissions"][0]
                 self.assertEqual(self.store.submission(row["id"], learner["id"], "relu")["code"], source)
 
@@ -257,6 +259,16 @@ class SubmissionHistoryTests(unittest.TestCase):
         with patch.object(main, "get_store", return_value=store_spy), \
                 patch.object(main, "execute_code") as execute:
             self.assert_http_error(404, lambda: main.submit_code("relu", request))
+        execute.assert_not_called()
+        store_spy.record_attempt.assert_not_called()
+        self.assertEqual(self.store.submissions("local", "relu")["submissions"], [])
+
+    def test_submit_handler_rejects_unknown_timezone_before_execution(self):
+        store_spy = Mock(wraps=self.store)
+        request = main.SubmitRequest(code="unexecuted source", timezone="Mars/Olympus_Mons")
+        with patch.object(main, "get_store", return_value=store_spy), \
+                patch.object(main, "execute_code") as execute:
+            self.assert_http_error(422, lambda: main.submit_code("relu", request))
         execute.assert_not_called()
         store_spy.record_attempt.assert_not_called()
         self.assertEqual(self.store.submissions("local", "relu")["submissions"], [])

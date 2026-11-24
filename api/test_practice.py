@@ -373,6 +373,7 @@ class PracticeStoreTests(unittest.TestCase):
                  lambda: self.dashboard(timezone="unknown-zone"),
                  lambda: self.store.dashboard(day="not-a-date"),
                  lambda: self.store.record_attempt("local", "missing", FAILURE),
+                 lambda: self.store.record_attempt("local", "relu", FAILURE, timezone="unknown-zone"),
                  lambda: self.store.create_profile("   ")]
         for operation in cases:
             with self.subTest(operation=operation), self.assertRaises(HTTPException):

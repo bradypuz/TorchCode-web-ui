@@ -12,7 +12,7 @@ from torch_judge.tasks import TASKS, get_task
 from torch_judge.web_engine import execute_code
 from api.parser import get_all_templates
 from api.implementation_lines import get_implementation_line_counts
-from api.practice import get_store, router as practice_router
+from api.practice import DEFAULT_TIMEZONE, get_store, learner_zone, router as practice_router
 from api.solutions import get_solution
 
 
@@ -53,6 +53,7 @@ class SubmitRequest(BaseModel):
     code: str
     user_id: str = "local"
     hint_used: bool = False
+    timezone: str = DEFAULT_TIMEZONE
 
 @app.get("/api/tasks")
 def list_tasks():
@@ -91,9 +92,11 @@ def get_task_solution(task_id: str):
 def submit_code(task_id: str, request: SubmitRequest):
     if not get_task(task_id):
         raise HTTPException(status_code=404, detail="Task not found")
-    # Validate profile before executing code so invalid requests have no side effects.
+    # Validate profile and timezone before executing code so invalid requests have no side effects.
     get_store().profile(request.user_id)
+    learner_zone(request.timezone)
     result = execute_code(task_id, request.code)
     get_store().record_attempt(request.user_id, task_id, result,
-                               hint_used=request.hint_used, code=request.code)
+                               hint_used=request.hint_used, code=request.code,
+                               timezone=request.timezone)
     return result
