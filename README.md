@@ -133,6 +133,8 @@ You can also press **Ctrl+C** in the launch terminal. Ports 3000, 4000, and 8000
 
 Choose a local learner profile, adjust the daily problem count, and click **Practice It!** to open the selected problem in the coding workspace. Submitting code saves the attempt and test results; the dashboard uses these results to prioritize unfinished problems and schedule review of past problems. Each profile keeps its own goal and history, stored locally in SQLite under `data/` and retained across restarts.
 
+Editor links remember the dashboard view that opened them. **My practice** in the coding workspace returns to that view, including its search/filter or selected journey week and lesson. Separate editor tabs keep their own return destinations, even if you browse elsewhere in the dashboard afterward.
+
 **Your Journey** turns the Suggested Study Plan below into four illustrated weekly paths, with all 43 problems in study order. Select a problem to see your progress and open its practice workspace or solution. Once a problem has a correct submission, it stays **Solved** and counts toward Journey completion, even if you choose **Needs more practice** or make mistakes in later attempts. The practice flag remains a separate reminder for future recommendations. Practice history groups repeated submissions under each problem; expand a row to see individual attempts and their test results.
 
 In **Your daily mission**, a problem stays **Done today** once you pass its tests that day, even if you choose **Needs more practice** or try again unsuccessfully. The flag helps schedule future practice without taking away earned completion. On a later day, a recommended review needs a fresh successful submission to count toward that day's mission.

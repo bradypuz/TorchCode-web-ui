@@ -9,7 +9,8 @@
     "lint": "eslint",
     "test:theme": "node --experimental-strip-types --test tests/code-theme.test.mjs",
     "test:explanation": "node --experimental-strip-types --test tests/explanation-markdown.test.mjs",
-    "test:journey": "node --experimental-strip-types --test tests/journey-progress.test.mjs"
+    "test:journey": "node --experimental-strip-types --test tests/journey-progress.test.mjs",
+    "test:navigation": "node --experimental-strip-types --test tests/practice-navigation.test.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

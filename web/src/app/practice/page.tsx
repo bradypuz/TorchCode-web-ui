@@ -8,6 +8,9 @@ import AppearanceSettings from './AppearanceSettings';
 import JourneyMap from './JourneyMap';
 import ProblemHistory, { type HistoryProblem } from './ProblemHistory';
 import { currentJourneyWeeks, lessonState } from './journeyProgress';
+import EditorLink from '../EditorLink';
+import { parsePracticeLocation, type PracticeSection as Section } from '../practiceNavigation';
+import { practiceScrollTop, updatePracticeLocation, usePracticeHref } from '../usePracticeNavigation';
 
 const API = 'http://localhost:8000/api';
 type Profile = { id: string; name: string };
@@ -22,7 +25,6 @@ type Dashboard = {
   curriculum: { week: number; focus: string; task_ids: string[]; solved: number; total: number }[];
 };
 type Task = { id: string; title: string; difficulty: string; implementation_lines?: number | null };
-type Section = 'today' | 'review' | 'history' | 'library';
 
 function localDay() {
   const now = new Date();
@@ -56,7 +58,7 @@ function Torch({ mini = false }: { mini?: boolean }) {
 }
 
 function PracticeLink({ id, user, onSolution, children = 'Practice It!', quiet = false }: { id: string; user: string; onSolution: (id: string) => void; children?: React.ReactNode; quiet?: boolean }) {
-  return <div className={s.problemActions}><a className={quiet ? s.quietButton : s.practiceButton} href={`http://localhost:3000/?task=${encodeURIComponent(id)}&user=${encodeURIComponent(user)}`} target="_blank" rel="noreferrer">{children}<ArrowRight size={16} /></a><button className={s.solutionButton} onClick={() => onSolution(id)} aria-label={`Solution for ${id}`}><BookOpen size={14} />Solution</button></div>;
+  return <div className={s.problemActions}><EditorLink className={quiet ? s.quietButton : s.practiceButton} taskId={id} user={user}>{children}<ArrowRight size={16} /></EditorLink><button className={s.solutionButton} onClick={() => onSolution(id)} aria-label={`Solution for ${id}`}><BookOpen size={14} />Solution</button></div>;
 }
 
 function ReviewPriority({ item }: { item: Problem }) {
@@ -65,6 +67,8 @@ function ReviewPriority({ item }: { item: Problem }) {
 }
 
 export default function PracticePage() {
+  const href = usePracticeHref();
+  const { section, query, filter } = parsePracticeLocation(href);
   const [data, setData] = useState<Dashboard | null>(null);
   const [solutionId, setSolutionId] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -72,21 +76,20 @@ export default function PracticePage() {
   const [goal, setGoal] = useState(3);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
-  const [section, setSection] = useState<Section>('today');
   const [showCodeLines, setShowCodeLines] = useState(false);
   const [showProfiles, setShowProfiles] = useState(false);
   const [profileName, setProfileName] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [filter, setFilter] = useState('all');
-  const [query, setQuery] = useState('');
   const [busyReview, setBusyReview] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const requestVersion = useRef(0);
   const activeUser = useRef('local');
   const modalRef = useRef<HTMLDialogElement>(null);
+  const pendingScroll = useRef<number | null>(null);
 
   useEffect(() => {
+    pendingScroll.current = parsePracticeLocation(window.location.href).scrollTop;
     const requestedUser = new URLSearchParams(window.location.search).get('user');
     let initialUser = requestedUser || 'local';
     let storedGoal = 3;
@@ -103,7 +106,41 @@ export default function PracticePage() {
     setGoal(Number.isInteger(storedGoal) && storedGoal >= 1 && storedGoal <= 10 ? storedGoal : 3);
     setShowCodeLines(storedCodeLines);
     setReady(true);
+    updatePracticeLocation({ user: initialUser });
+    const restorePosition = () => {
+      pendingScroll.current = parsePracticeLocation(window.location.href).scrollTop;
+      const restoredUser = new URLSearchParams(window.location.search).get('user');
+      if (!restoredUser || restoredUser === activeUser.current) return;
+      requestVersion.current++;
+      activeUser.current = restoredUser;
+      setUser(restoredUser); setData(null); setError(''); setBusyReview(''); setShowProfiles(false);
+      let restoredGoal = 3;
+      try {
+        restoredGoal = Number(localStorage.getItem(`torchcode_goal_${restoredUser}`) || 3);
+        localStorage.setItem('torchcode_practice_user', restoredUser);
+      } catch {
+        // The profile and its URL still work when browser storage is unavailable.
+      }
+      setGoal(Number.isInteger(restoredGoal) && restoredGoal >= 1 && restoredGoal <= 10 ? restoredGoal : 3);
+    };
+    window.addEventListener('popstate', restorePosition);
+    return () => window.removeEventListener('popstate', restorePosition);
   }, []);
+
+  useEffect(() => {
+    if (!data || tasks.length === 0 || pendingScroll.current === null) return;
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        if (pendingScroll.current === null) return;
+        document.getElementById('practice-scroll')?.scrollTo({ top: pendingScroll.current, behavior: 'instant' });
+        pendingScroll.current = null;
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [data, tasks, href]);
+
+  function setQuery(value: string) { updatePracticeLocation({ query: value }); }
+  function setFilter(value: string) { updatePracticeLocation({ filter: value }); }
 
   function changeCodeLines(show: boolean) {
     setShowCodeLines(show);
@@ -153,11 +190,11 @@ export default function PracticePage() {
   function changeUser(id: string) {
     requestVersion.current++;
     activeUser.current = id;
-    setUser(id); setData(null); setError(''); setQuery(''); setFilter('all'); setBusyReview('');
+    setUser(id); setData(null); setError(''); setBusyReview('');
     const value = Number(localStorage.getItem(`torchcode_goal_${id}`) || 3);
     setGoal(value >= 1 && value <= 10 ? value : 3);
     localStorage.setItem('torchcode_practice_user', id);
-    const url = new URL(window.location.href); url.searchParams.set('user', id); window.history.replaceState({}, '', url);
+    updatePracticeLocation({ user: id, query: '', filter: 'all', week: null, lesson: null, scrollTop: 0 });
     setShowProfiles(false);
   }
 
@@ -210,7 +247,11 @@ export default function PracticePage() {
     .sort((left, right) => (studyOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (studyOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER));
   const nav = [{ id: 'today' as const, label: 'Today’s practice', icon: LayoutGrid }, { id: 'review' as const, label: 'Review lab', icon: RefreshCw }, { id: 'history' as const, label: 'Your journey', icon: History }, { id: 'library' as const, label: 'Problem library', icon: BookOpen }];
 
-  function navigate(next: Section) { setSection(next); setQuery(''); setFilter('all'); document.getElementById('practice-scroll')?.scrollTo({ top: 0, behavior: 'smooth' }); }
+  function navigate(next: Section) {
+    updatePracticeLocation({ scrollTop: practiceScrollTop() });
+    updatePracticeLocation({ section: next, query: '', filter: 'all', week: null, lesson: null, scrollTop: 0 }, next !== section);
+    document.getElementById('practice-scroll')?.scrollTo({ top: 0, behavior: 'smooth' });
+  }
 
   const reviewSection = <section className={s.reviewSection}>
     <div className={s.sectionHeading}><div><span className={s.eyebrow}>A LITTLE RECALL GOES A LONG WAY</span><h2>Bring it back <span className={s.countPill}>{data?.reviews.length || 0}</span></h2><p>Turn those tricky moments into second nature.</p></div><RefreshCw className={s.reviewHeadingIcon} size={25} /></div>
@@ -233,7 +274,7 @@ export default function PracticePage() {
     <aside className={s.sidebar}>
       <button className={s.brand} onClick={() => navigate('today')} aria-label="TorchCode home"><span className={s.brandIcon}><Flame size={23} fill="currentColor" /></span><span>torch<span className={s.brandLight}>code</span><small>YOUR DAILY SPARK</small></span></button>
       <div className={s.navLabel}>LET’S BUILD A HABIT</div><nav aria-label="Practice navigation">{nav.map(item => <button key={item.id} onClick={() => navigate(item.id)} className={`${s.navItem} ${section === item.id ? s.activeNav : ''}`}><item.icon size={20} /><span>{item.label}</span>{item.id === 'review' && !!data?.reviews.length && <b>{data.reviews.length}</b>}</button>)}</nav>
-      <div className={s.sidebarBottom}><div className={s.smallCoach}><Torch mini /><h3>Little by little.<br />You’ve got this.</h3><p>Consistency is your<br />superpower.</p></div><a href={`http://localhost:3000/?user=${encodeURIComponent(user)}`} target="_blank" rel="noreferrer" className={s.editorLink}><Code2 size={18} /> Open the editor <ArrowRight size={15} /></a><button className={s.sidebarProfile} onClick={() => setShowProfiles(true)}><span className={s.avatar}>{(data?.profile.name || 'Y').slice(0, 1).toUpperCase()}</span><span>{data?.profile.name || 'You'}<small>Local learner profile</small></span><ChevronDown size={15} /></button></div>
+      <div className={s.sidebarBottom}><div className={s.smallCoach}><Torch mini /><h3>Little by little.<br />You’ve got this.</h3><p>Consistency is your<br />superpower.</p></div><EditorLink user={user} className={s.editorLink}><Code2 size={18} /> Open the editor <ArrowRight size={15} /></EditorLink><button className={s.sidebarProfile} onClick={() => setShowProfiles(true)}><span className={s.avatar}>{(data?.profile.name || 'Y').slice(0, 1).toUpperCase()}</span><span>{data?.profile.name || 'You'}<small>Local learner profile</small></span><ChevronDown size={15} /></button></div>
     </aside>
 
     <div className={s.viewport} id="practice-scroll">

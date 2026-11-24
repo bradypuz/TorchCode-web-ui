@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, BookOpen, Check, ChevronDown, Clock3, Code2, History, Plus, RefreshCw } from 'lucide-react';
 import s from './problem-history.module.css';
 import { isManuallyFlagged, lessonState } from './journeyProgress';
+import EditorLink from '../EditorLink';
 
 export type HistoryProblem = {
   id: number; task_id: string; title: string; difficulty: string;
@@ -82,7 +83,7 @@ function ProblemRow({ item, user, busyReview, onSolution, onReview }: Omit<Props
     <div className={s.summary}>
       <div className={s.problem}><span className={solved ? s.solvedIcon : s.workingIcon}>{solved ? <Check size={18} /> : item.needs_review ? <RefreshCw size={18} /> : <Code2 size={18} />}</span><div><h3>{item.title}</h3><p>{item.difficulty}<span>·</span><time dateTime={item.created_at}>Last tried {new Date(item.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time></p></div></div>
       <div className={s.result}><div className={s.resultBadges}><span className={solved ? s.solvedBadge : item.needs_review ? s.reviewBadge : s.workingBadge}>{status}</span>{solved && item.needs_review && <span className={s.reviewBadge}>Needs more practice</span>}</div><small>Latest: {item.passed}/{item.total} tests passed</small></div>
-      <div className={s.actions}><a href={`http://localhost:3000/?task=${encodeURIComponent(item.task_id)}&user=${encodeURIComponent(user)}`} target="_blank" rel="noreferrer">Practice<ArrowRight size={13} /></a><button onClick={() => onSolution(item.task_id)} aria-label={`Solution for ${item.task_id}`}><BookOpen size={13} />Solution</button></div>
+      <div className={s.actions}><EditorLink taskId={item.task_id} user={user}>Practice<ArrowRight size={13} /></EditorLink><button onClick={() => onSolution(item.task_id)} aria-label={`Solution for ${item.task_id}`}><BookOpen size={13} />Solution</button></div>
     </div>
     <div className={s.rowFooter}><button className={s.expandButton} aria-expanded={expanded} aria-controls={panelId} aria-label={`${expanded ? 'Hide' : 'Show'} ${item.attempts} ${item.attempts === 1 ? 'submission' : 'submissions'} for ${item.title}`} onClick={() => { if (!expanded) { setLoading(true); setLoadingMore(false); setError(''); } setExpanded(value => !value); }}><History size={13} />{item.attempts} {item.attempts === 1 ? 'submission' : 'submissions'}<ChevronDown size={13} className={expanded ? s.expandedArrow : ''} /></button><button className={s.reviewButton} disabled={Boolean(busyReview)} onClick={() => onReview(item.task_id, !manuallyFlagged)}>{manuallyFlagged ? <RefreshCw size={12} /> : <Plus size={12} />}{busyReview === item.task_id ? 'Updating…' : manuallyFlagged ? 'Clear my practice flag' : item.needs_review ? 'Add practice flag' : 'Needs more practice'}</button></div>
     {expanded && <section id={panelId} className={s.submissions} aria-label={`Submissions for ${item.title}`}>

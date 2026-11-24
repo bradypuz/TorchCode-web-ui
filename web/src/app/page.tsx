@@ -14,6 +14,8 @@ import { Allotment } from "allotment";
 import "allotment/dist/style.css";
 import { useCodeTheme } from './useCodeTheme';
 import s from './workspace.module.css';
+import { getPracticeReturnUrl } from './practiceNavigation';
+import { usePracticeHref } from './usePracticeNavigation';
 
 const API_BASE = "http://localhost:8000/api";
 
@@ -113,6 +115,9 @@ export default function Home() {
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [solvedTasks, setSolvedTasks] = useState<Record<string, boolean>>({});
   const [userId, setUserId] = useState<string | null>(null);
+  const editorHref = usePracticeHref();
+  const editorParams = new URLSearchParams(editorHref ? new URL(editorHref).search : '');
+  const practiceReturnTo = getPracticeReturnUrl(editorParams.get('returnTo'), userId || editorParams.get('user') || 'local');
   const { theme } = useCodeTheme(userId);
   const [profileName, setProfileName] = useState('You');
   const [hintUsed, setHintUsed] = useState(false);
@@ -442,7 +447,7 @@ export default function Home() {
         
         <div className="flex items-center space-x-3">
           <a
-            href={`http://localhost:4000/?user=${encodeURIComponent(userId || 'local')}`}
+            href={practiceReturnTo}
             className="flex items-center gap-2 rounded-md border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-sm font-medium text-[var(--workspace-emerald)] transition-colors hover:border-emerald-400/50 hover:bg-emerald-400/20"
             title={`Open ${profileName}'s practice dashboard`}
           >

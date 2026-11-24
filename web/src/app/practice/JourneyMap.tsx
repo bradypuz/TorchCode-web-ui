@@ -1,9 +1,12 @@
 'use client';
 
-import { useEffect, useId, useRef, useState, type CSSProperties, type RefObject } from 'react';
+import { useEffect, useId, useRef, type CSSProperties, type RefObject } from 'react';
 import { ArrowRight, BookOpen, Check, ChevronRight, Code2, Compass, Flag, RefreshCw, Sparkles, Star, Trophy } from 'lucide-react';
 import s from './journey.module.css';
 import { currentJourneyWeeks, isManuallyFlagged, lessonState } from './journeyProgress';
+import EditorLink from '../EditorLink';
+import { parsePracticeLocation } from '../practiceNavigation';
+import { updatePracticeLocation, usePracticeHref } from '../usePracticeNavigation';
 
 export type JourneyWeek = { week: number; focus: string; task_ids: string[]; solved: number; total: number };
 export type JourneyTask = { id: string; title: string; difficulty: string; implementation_lines?: number | null };
@@ -145,6 +148,7 @@ function codeLineLabel(count?: number | null, toImplement = false) {
 }
 
 function JourneyForUser({ weeks: studyWeeks, tasks, progress, history, user, onSolution, onReview, busyReview, showCodeLines, onShowCodeLines }: JourneyMapProps) {
+  const navigation = parsePracticeLocation(usePracticeHref());
   const detailId = useId();
   const codeLinesHelpId = useId();
   const pathAreaRef = useRef<HTMLDivElement>(null);
@@ -159,9 +163,8 @@ function JourneyForUser({ weeks: studyWeeks, tasks, progress, history, user, onS
   const attemptsFor = (id: string) => Math.max(progressById.get(id)?.attempts || 0, historyById.get(id)?.attempts || 0);
   const nextId = weeks.flatMap(week => week.task_ids).find(id => !isSolved(id));
   const initialWeek = weeks.find(week => week.task_ids.includes(nextId || '')) || weeks[0];
-  const [selection, setSelection] = useState({ week: initialWeek?.week || 1, id: nextId || initialWeek?.task_ids[0] || '' });
-  const selectedWeek = weeks.find(week => week.week === selection.week) || initialWeek;
-  const selectedId = selectedWeek?.task_ids.includes(selection.id) ? selection.id : selectedWeek?.task_ids.find(id => !isSolved(id)) || selectedWeek?.task_ids[0];
+  const selectedWeek = weeks.find(week => week.week === navigation.week) || initialWeek;
+  const selectedId = navigation.lesson && selectedWeek?.task_ids.includes(navigation.lesson) ? navigation.lesson : selectedWeek?.task_ids.find(id => !isSolved(id)) || selectedWeek?.task_ids[0];
   const selectedTask: JourneyTask | undefined = selectedId ? taskById.get(selectedId) || { id: selectedId, title: selectedId.replaceAll('_', ' '), difficulty: 'Practice' } : undefined;
   const selectedHistory = selectedId ? historyById.get(selectedId) : undefined;
   const selectedProgress = selectedId ? progressById.get(selectedId) : undefined;
@@ -173,9 +176,16 @@ function JourneyForUser({ weeks: studyWeeks, tasks, progress, history, user, onS
   const selectedNumber = selectedWeek && selectedId ? selectedWeek.task_ids.indexOf(selectedId) + 1 : 1;
   const lastAttempt = selectedHistory?.created_at || selectedProgress?.last_attempt_at;
 
+  useEffect(() => {
+    if (navigation.section !== 'history' || !selectedWeek || !selectedId) return;
+    if (navigation.week !== selectedWeek.week || navigation.lesson !== selectedId) {
+      updatePracticeLocation({ week: selectedWeek.week, lesson: selectedId });
+    }
+  }, [selectedWeek, selectedId, navigation.section, navigation.week, navigation.lesson]);
+
   function selectWeek(week: JourneyWeek) {
     if (week.week === selectedWeek?.week) return;
-    setSelection({ week: week.week, id: week.task_ids.find(id => !isSolved(id)) || week.task_ids[0] || '' });
+    updatePracticeLocation({ week: week.week, lesson: week.task_ids.find(id => !isSolved(id)) || week.task_ids[0] || '' });
   }
 
   return <section className={s.journey} aria-label="Your learning journey">
@@ -226,7 +236,7 @@ function JourneyForUser({ weeks: studyWeeks, tasks, progress, history, user, onS
               const displayName = selectedWeek.week === 4 ? SUMMIT_LESSON_NAMES[id] || task?.title : task?.title;
               const style = { '--desktop-col': desktopColumn, '--desktop-row': desktopRow + 1, '--mobile-col': centeredMobileFinish ? '1 / -1' : mobileRow % 2 ? 2 - index % 2 : index % 2 + 1, '--mobile-row': mobileRow + 1 } as CSSProperties;
               return <li key={id} className={s.lesson} style={style}>
-                <button className={`${s.lessonButton} ${chosen ? s.chosenLesson : ''} ${isSolved(id) ? s.solvedLesson : needsReview(id) ? s.reviewLesson : ''}`} onClick={() => setSelection({ week: selectedWeek.week, id })} aria-current={chosen ? 'step' : undefined} aria-controls={detailId} aria-label={`Lesson ${index + 1}: ${task?.title || id}, ${state}${isSolved(id) && needsReview(id) ? ', Needs more practice reminder' : ''}${next ? ', recommended next lesson' : ''}${showCodeLines ? `, ${codeLineLabel(task?.implementation_lines, true)}` : ''}`}>
+                <button className={`${s.lessonButton} ${chosen ? s.chosenLesson : ''} ${isSolved(id) ? s.solvedLesson : needsReview(id) ? s.reviewLesson : ''}`} onClick={() => updatePracticeLocation({ week: selectedWeek.week, lesson: id })} aria-current={chosen ? 'step' : undefined} aria-controls={detailId} aria-label={`Lesson ${index + 1}: ${task?.title || id}, ${state}${isSolved(id) && needsReview(id) ? ', Needs more practice reminder' : ''}${next ? ', recommended next lesson' : ''}${showCodeLines ? `, ${codeLineLabel(task?.implementation_lines, true)}` : ''}`}>
                   <span data-journey-node className={s.lessonMedallion}>{isSolved(id) ? <Check size={24} strokeWidth={3} /> : needsReview(id) ? <RefreshCw size={21} /> : <span>{index + 1}</span>}{isSolved(id) && <Star className={s.lessonStar} size={14} fill="currentColor" />}</span>
                   <span className={s.lessonName} title={task?.title}>{displayName || id.replaceAll('_', ' ')}</span>
                   {next && state !== 'Needs more practice' ? <span className={s.nextLesson}><Sparkles size={9} /> UP NEXT</span> : <span className={s.lessonStatus}>{state === 'Not started' ? `LESSON ${String(index + 1).padStart(2, '0')}` : state}</span>}
@@ -248,7 +258,7 @@ function JourneyForUser({ weeks: studyWeeks, tasks, progress, history, user, onS
           <div className={s.statusBadges}><span className={`${s.stateBadge} ${selectedState === 'Needs more practice' ? s.reviewState : selectedState === 'Solved' ? s.solvedState : ''}`}>{selectedState === 'Solved' ? <Check size={13} /> : selectedState === 'Needs more practice' ? <RefreshCw size={12} /> : <span className={s.stateDot} />}{selectedState}</span>{selectedState === 'Solved' && needsReview(selectedTask.id) && <span className={`${s.stateBadge} ${s.reviewState}`}><RefreshCw size={12} />Needs more practice</span>}</div>
           <p className={s.panelIntro}>{selectedState === 'Solved' ? needsReview(selectedTask.id) ? 'You’ve solved this problem. Your practice reminder helps bring it back in a future daily mission.' : 'Look at you go. Keep this skill fresh with another run.' : selectedState === 'Needs more practice' ? 'A familiar trail worth walking again. Give this one a little extra practice.' : selectedState === 'In progress' ? 'You’ve already taken the first step. Pick up where you left off.' : 'Start with a small idea. Turn it into working PyTorch, one test at a time.'}</p>
           {showCodeLines && <div className={s.panelCodeLines}><Code2 size={17} aria-hidden="true" /><div><strong>{codeLineLabel(selectedTask.implementation_lines, true)}</strong><span>Based on the reference solution</span></div></div>}
-          <a className={s.practiceButton} href={`http://localhost:3000/?task=${encodeURIComponent(selectedTask.id)}&user=${encodeURIComponent(user)}`} target="_blank" rel="noreferrer">Practice It!<ArrowRight size={17} /></a>
+          <EditorLink className={s.practiceButton} taskId={selectedTask.id} user={user}>Practice It!<ArrowRight size={17} /></EditorLink>
           <button className={s.solutionButton} onClick={() => onSolution(selectedTask.id)}><BookOpen size={15} /> Solution</button>
           <div className={s.lessonStats}><div><strong>{attemptsFor(selectedTask.id)}</strong><span>{attemptsFor(selectedTask.id) === 1 ? 'attempt' : 'attempts'}</span></div><div><strong>{selectedHistory ? <>{selectedHistory.passed}<small>/{selectedHistory.total}</small></> : '—'}</strong><span>latest tests passed</span></div></div>
           {lastAttempt ? <p className={s.lastAttempt}>Last practiced {formatDate(lastAttempt)}{selectedHistory?.hint_used ? ' · Hint used' : ''}</p> : <p className={s.lastAttempt}>{isSolved(selectedTask.id) || attemptsFor(selectedTask.id) > 0 ? 'Earlier attempt details weren’t recorded.' : 'Your first attempt is waiting for you.'}</p>}

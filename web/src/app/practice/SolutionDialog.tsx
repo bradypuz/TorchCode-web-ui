@@ -14,6 +14,7 @@ import ExplanationVisual from './ExplanationVisual';
 import { normalizeExplanationMarkdown } from './explanationMarkdown';
 import { EXPLANATION_VISUALS } from './explanationVisuals';
 import MermaidDiagram, { MermaidThemeContext, MermaidVisibilityContext } from './MermaidDiagram';
+import EditorLink from '../EditorLink';
 
 type Solution = {
   id: string;
@@ -137,6 +138,6 @@ export default function SolutionDialog({ taskId, user, onClose }: Props) {
       </section>
     </>}
 
-    <footer className={s.footer}><span><Sparkles size={15} />Understand the idea. Then make it your own.</span><a href={`http://localhost:3000/?task=${encodeURIComponent(taskId)}&user=${encodeURIComponent(user)}`} target="_blank" rel="noreferrer">Back to practice<ArrowRight size={15} /></a></footer>
+    <footer className={s.footer}><span><Sparkles size={15} />Understand the idea. Then make it your own.</span><EditorLink taskId={taskId} user={user}>Back to practice<ArrowRight size={15} /></EditorLink></footer>
   </dialog>;
 }
